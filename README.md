@@ -290,3 +290,42 @@ curl -i -X POST http://localhost/api/v1/documents \
 ### 아직 구현하지 않은 문서 기능
 
 문서별 ACL, 사용자/부서 공유, 외부 공유 링크, 두 번째 버전 업로드, 본문 추출, OCR, 임베딩, RAG, AI 분류/추천, ClamAV 실제 검사, PDF 미리보기, 영구 삭제와 보존 정책은 후속 단계에서 구현합니다.
+
+## 프론트엔드 인증 세션
+
+프론트엔드는 로그인 성공 응답의 `access_token`과 사용자 요약 정보를 Zustand 기반 메모리 상태로만 보관합니다. Access Token, Refresh Token, 비밀번호, 전체 로그인 응답은 `localStorage` 또는 `sessionStorage`에 저장하지 않습니다.
+
+### 인증 상태 구조
+
+인증 상태는 `loading`, `authenticated`, `unauthenticated` 세 단계로 관리합니다. 앱 시작 시 `loading`으로 시작하고, HttpOnly Refresh Token 쿠키를 이용해 `/api/v1/auth/refresh`를 호출한 뒤 성공하면 Access Token과 사용자 정보를 메모리에 복구합니다. 실패하면 세션을 비우고 `unauthenticated`로 전환합니다.
+
+### Refresh Token 쿠키와 복구
+
+Refresh Token은 백엔드가 설정하는 HttpOnly 쿠키로 유지되며 브라우저 JavaScript에서 직접 읽지 않습니다. 새로고침으로 메모리 Access Token이 사라져도 앱 시작 시 refresh 요청을 통해 세션을 복구합니다.
+
+### 공통 API client와 401 재시도
+
+브라우저 보호 API 요청은 공통 API client를 사용합니다. client는 메모리 Access Token이 있으면 `Authorization: Bearer <access_token>` 헤더를 자동으로 추가하고 모든 요청에 `credentials: include`를 적용합니다. JSON 요청에는 `Content-Type: application/json`을 설정하지만, `FormData` 요청에는 브라우저가 multipart boundary를 지정하도록 `Content-Type`을 직접 설정하지 않습니다.
+
+보호 API가 `401 Unauthorized`를 반환하면 refresh 요청을 한 번만 실행하고, 성공 시 원래 요청을 한 번 재시도합니다. Refresh Token 회전 정책 때문에 여러 요청이 동시에 401을 받더라도 공유 refresh Promise를 사용해 refresh 요청은 하나만 실행합니다. refresh 실패 시 프론트엔드 세션을 제거하고 로그인 화면으로 이동합니다.
+
+### 보호 페이지와 역할별 메뉴
+
+`/dashboard`, `/documents`, `/admin/users`, `/admin/departments`는 공통 보호 컴포넌트를 통해 인증 상태를 확인합니다. 인증 확인 중에는 로딩 UI를 보여 주고, 미인증 사용자는 `/login?next=<원래경로>`로 이동합니다. 관리자 화면은 `SYSTEM_ADMIN` 사용자에게만 표시하며, 사이드바에서도 사용자/부서 관리 메뉴는 `SYSTEM_ADMIN`에게만 노출합니다. 이 프론트엔드 역할 검사는 편의 UI이며 실제 권한 검사는 백엔드 API에서 다시 수행합니다.
+
+### 로그아웃
+
+로그아웃 버튼은 `/api/v1/auth/logout`을 호출해 백엔드 Refresh Token 폐기를 요청한 뒤, 요청 성공 여부와 관계없이 프론트엔드 메모리 세션을 제거하고 `/login`으로 이동합니다.
+
+### 프론트엔드 인증 테스트
+
+의존성이 설치된 환경에서 다음 명령으로 타입 검사, 린트, 빌드와 인증 client 정적 검사를 실행합니다.
+
+```bash
+cd frontend
+npm ci
+npm run type-check
+npm run lint
+npm run build
+npm run test:auth
+```

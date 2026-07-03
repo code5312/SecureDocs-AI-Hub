@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start -H 0.0.0.0",
     "lint": "eslint .",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "test:auth": "node tests/auth-client-static.test.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "5.62.11",
