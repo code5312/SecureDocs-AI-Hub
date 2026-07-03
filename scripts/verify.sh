@@ -53,6 +53,7 @@ curl -fsS http://localhost/openapi.json >/dev/null
 curl -fsSI http://localhost/ >/dev/null
 
 docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT extname FROM pg_extension WHERE extname = 'vector';"
+docker compose exec -T backend alembic upgrade head
 docker compose run --rm minio-init
 cd backend
 python -m pytest

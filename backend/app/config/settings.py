@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     secret_key: str = "change-me"
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
+    jwt_algorithm: str = "HS256"
+    refresh_cookie_name: str = "securedocs_refresh_token"
+    refresh_cookie_secure: bool = False
+    refresh_cookie_samesite: str = "lax"
 
     postgres_host: str = "localhost"
     postgres_port: int = 5432

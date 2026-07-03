@@ -174,3 +174,75 @@ git diff --check
 ## 아직 구현하지 않은 기능
 
 이번 작업은 기반 환경 검증 및 보정 범위입니다. 인증, JWT, 사용자·부서·역할 관리, 문서 업로드, 문서 권한, RAG, AI 추천, 백업 실행 로직, 협업 기능은 후속 작업에서 구현합니다.
+
+## 인증·사용자·부서 관리
+
+이번 단계의 백엔드는 이메일/비밀번호 로그인, JWT Access Token, HttpOnly Refresh Token 쿠키, 사용자/부서 관리 API, 감사 로그를 제공합니다. Access Token은 `Authorization: Bearer <token>` 헤더로 전달하고 Refresh Token 원문은 JSON 응답에 포함하지 않으며 `securedocs_refresh_token` HttpOnly 쿠키에 저장합니다.
+
+### 역할별 권한
+
+- `SYSTEM_ADMIN`: 사용자/부서 생성과 수정, 사용자 활성화/비활성화, 역할 변경, 관리자 API 접근
+- `DOCUMENT_ADMIN`: 이번 단계에서는 자신의 정보 조회만 허용
+- `DEPARTMENT_MANAGER`: 동일 부서 사용자 조회와 자신의 정보 조회
+- `USER`: 자신의 정보 조회
+
+역할은 문자열 순서가 아니라 필요한 역할을 명시적으로 검사합니다.
+
+### Alembic 마이그레이션
+
+```bash
+cd backend
+alembic upgrade head
+```
+
+Docker 환경에서는 다음과 같이 실행합니다.
+
+```bash
+docker compose exec backend alembic upgrade head
+```
+
+### 초기 SYSTEM_ADMIN 생성
+
+애플리케이션 시작 시 기본 관리자를 자동 생성하지 않습니다. 마이그레이션 후 명시적으로 다음 명령을 실행하세요.
+
+```bash
+cd backend
+INITIAL_ADMIN_EMAIL=admin@example.com INITIAL_ADMIN_PASSWORD='ExamplePassword1!' INITIAL_ADMIN_NAME='관리자' python -m app.scripts.create_admin
+```
+
+Docker 환경:
+
+```bash
+docker compose exec backend python -m app.scripts.create_admin
+```
+
+동일 이메일 사용자가 이미 있으면 중복 생성하지 않고 메시지만 출력합니다. 비밀번호는 로그에 출력하지 않습니다.
+
+### 로그인 API 예시
+
+```bash
+curl -i -X POST http://localhost/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@example.com","password":"ExamplePassword1!"}'
+```
+
+응답 JSON에는 Access Token만 포함되며 Refresh Token은 HttpOnly 쿠키로 설정됩니다. 개발 환경에서는 `.env`의 `REFRESH_COOKIE_SECURE=false`, `REFRESH_COOKIE_SAMESITE=lax`를 사용하고 운영 환경에서는 HTTPS 전제로 Secure 쿠키를 사용하세요.
+
+### 구현된 인증 API
+
+- `POST /api/v1/auth/login`
+- `POST /api/v1/auth/refresh`
+- `POST /api/v1/auth/logout`
+- `GET /api/v1/auth/me`
+- `GET /api/v1/users`
+- `POST /api/v1/users`
+- `GET /api/v1/users/{user_id}`
+- `PATCH /api/v1/users/{user_id}`
+- `GET /api/v1/departments`
+- `POST /api/v1/departments`
+- `GET /api/v1/departments/{department_id}`
+- `PATCH /api/v1/departments/{department_id}`
+
+### 아직 구현하지 않은 인증 관련 항목
+
+프론트엔드 사용자/부서 화면은 기반 UI만 제공하며 실제 폼 상태와 API 연동은 후속 작업에서 보강합니다. 문서 업로드, 문서 ACL, RAG, AI 추천, 백업 실행 로직은 아직 구현하지 않았습니다.
