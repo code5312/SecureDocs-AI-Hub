@@ -3,7 +3,7 @@ from functools import lru_cache
 from typing import Annotated, Any
 
 from pydantic import Field, computed_field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     minio_connect_timeout_seconds: float = 2.0
     minio_read_timeout_seconds: float = 2.0
 
-    cors_origins: Annotated[list[str], Field(default_factory=lambda: ["http://localhost:3000"])]
+    cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:3000"])
 
     @field_validator("cors_origins", mode="before")
     @classmethod
@@ -45,14 +45,19 @@ class Settings(BaseSettings):
         """Accept CORS origins as a JSON array, comma-separated string, or list."""
         if isinstance(value, str):
             stripped = value.strip()
-            if stripped.startswith("["):
-                parsed = json.loads(stripped)
+            if not stripped:
+                return []
+            if stripped.startswith(("[", "{")):
+                try:
+                    parsed = json.loads(stripped)
+                except json.JSONDecodeError as exc:
+                    raise ValueError("CORS_ORIGINS JSON value must be a valid string array") from exc
                 if not isinstance(parsed, list) or not all(isinstance(origin, str) for origin in parsed):
                     raise ValueError("CORS_ORIGINS JSON value must be a string array")
                 return [origin.strip() for origin in parsed if origin.strip()]
             return [origin.strip() for origin in stripped.split(",") if origin.strip()]
         if isinstance(value, list) and all(isinstance(origin, str) for origin in value):
-            return value
+            return [origin.strip() for origin in value if origin.strip()]
         raise ValueError("CORS_ORIGINS must be a comma-separated string or string array")
 
     @computed_field  # type: ignore[prop-decorator]

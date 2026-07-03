@@ -41,6 +41,8 @@ cp .env.example .env
 
 `NEXT_PUBLIC_API_BASE_URL`은 브라우저에서 사용할 공개 API 주소이고, `API_INTERNAL_BASE_URL`은 Docker 내부의 Next.js 서버 컴포넌트가 백엔드에 접근할 때 사용하는 서버 전용 주소입니다.
 
+`CORS_ORIGINS`는 쉼표 구분 문자열(`http://localhost,http://localhost:3000`) 또는 JSON 배열 문자열(`["http://localhost","http://localhost:3000"]`)을 지원합니다. `*`는 자동으로 추가하지 않으며 빈 항목은 제거됩니다.
+
 ## 최초 실행
 
 ```bash
