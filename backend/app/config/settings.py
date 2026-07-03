@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     minio_connect_timeout_seconds: float = 2.0
     minio_read_timeout_seconds: float = 2.0
 
+    document_max_upload_size_mb: int = 50
+    document_allowed_extensions: str = "pdf,docx,pptx,xlsx,txt,md"
+    document_download_url_expires_seconds: int = 300
+
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["http://localhost:3000"])
 
     @field_validator("cors_origins", mode="before")

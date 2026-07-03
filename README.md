@@ -246,3 +246,47 @@ curl -i -X POST http://localhost/api/v1/auth/login \
 ### 아직 구현하지 않은 인증 관련 항목
 
 프론트엔드 사용자/부서 화면은 기반 UI만 제공하며 실제 폼 상태와 API 연동은 후속 작업에서 보강합니다. 문서 업로드, 문서 ACL, RAG, AI 추천, 백업 실행 로직은 아직 구현하지 않았습니다.
+
+## 문서 메타데이터·업로드 기반
+
+이번 단계는 문서 ACL, 본문 추출, OCR, 임베딩, RAG 없이 최초 문서 업로드와 원본 파일 저장 기반만 제공합니다.
+
+### 업로드 흐름
+
+인증된 활성 사용자가 `POST /api/v1/documents`에 `multipart/form-data`로 `title`, `description`, `file`을 전달하면 백엔드는 제목, 크기, 확장자, MIME 타입, 파일 서명을 검증하고 SHA-256 체크섬을 계산합니다. 이후 `Document`와 최초 `DocumentVersion(version_number=1)`을 만들고 MinIO `documents-original` 버킷에 업로드한 뒤 `current_version_id`를 연결하고 상태를 `ACTIVE`로 전환합니다.
+
+### 지원 파일 형식과 크기
+
+기본 허용 확장자는 `.pdf`, `.docx`, `.pptx`, `.xlsx`, `.txt`, `.md`이며 `.env`의 `DOCUMENT_ALLOWED_EXTENSIONS`로 관리합니다. 기본 최대 크기는 `DOCUMENT_MAX_UPLOAD_SIZE_MB=50`입니다. 브라우저 검증은 편의 기능이며 백엔드 검증이 최종 기준입니다.
+
+### MinIO 저장 키 정책
+
+원본 파일은 `documents-original` 버킷에 저장합니다. 저장 키는 `documents/{owner_id}/{document_id}/{version_id}/{uuid}.{extension}` 형식이며 사용자가 제공한 파일명은 경로에 사용하지 않습니다. 원본 파일명과 정규화 파일명은 메타데이터로만 저장합니다.
+
+### 체크섬과 MIME 검증
+
+업로드 바이트에서 SHA-256 체크섬을 계산해 `document_versions.checksum_sha256`에 저장합니다. 확장자와 Content-Type을 함께 확인하고 PDF/Office Open XML 파일은 기본 파일 서명도 확인합니다. ClamAV 연동 위치는 `documents.validators` 이후 업로드 전 단계이며, 현재 실제 ClamAV 검사는 수행하지 않습니다.
+
+### 임시 접근제어 정책
+
+문서 ACL이 아직 없으므로 임시 역할 정책을 사용합니다. `SYSTEM_ADMIN`은 모든 문서 메타데이터와 다운로드/삭제가 가능하고, `DOCUMENT_ADMIN`은 모든 메타데이터를 볼 수 있지만 자신이 업로드한 문서만 다운로드/삭제할 수 있습니다. `DEPARTMENT_MANAGER`는 같은 부서 문서 메타데이터를 볼 수 있으나 다른 사용자의 원본 다운로드는 금지됩니다. `USER`는 자신이 업로드한 문서만 접근할 수 있습니다. 이 정책은 향후 문서 ACL로 교체됩니다.
+
+### 논리 삭제와 일관성 처리
+
+삭제 API는 DB 레코드와 MinIO 객체를 즉시 제거하지 않고 `is_deleted=true`, `deleted_at`만 갱신합니다. 업로드 중 MinIO 저장 후 DB 처리 실패가 발생하면 업로드한 객체 삭제를 보상 처리로 시도합니다. 삭제 실패 가능성이 있으므로 향후 고아 객체 정리 작업이 필요합니다.
+
+### 문서 API 예시
+
+```bash
+curl -i -X POST http://localhost/api/v1/documents \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -F "title=보안 정책" \
+  -F "description=초기 문서" \
+  -F "file=@policy.pdf;type=application/pdf"
+```
+
+다운로드는 `GET /api/v1/documents/{document_id}/download`에서 짧은 만료 시간을 가진 presigned URL을 반환합니다. 만료 시간은 `DOCUMENT_DOWNLOAD_URL_EXPIRES_SECONDS`로 관리합니다. 목록 조회 감사 로그는 과도한 로그 생성을 피하기 위해 현재 기록하지 않고, 업로드·상세조회·다운로드·삭제만 기록합니다.
+
+### 아직 구현하지 않은 문서 기능
+
+문서별 ACL, 사용자/부서 공유, 외부 공유 링크, 두 번째 버전 업로드, 본문 추출, OCR, 임베딩, RAG, AI 분류/추천, ClamAV 실제 검사, PDF 미리보기, 영구 삭제와 보존 정책은 후속 단계에서 구현합니다.
