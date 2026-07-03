@@ -84,7 +84,7 @@ async function refreshOnce(): Promise<boolean> {
     });
     refreshPromise = pendingRefresh;
   }
-  return refreshPromise;
+  return refreshPromise ?? Promise.resolve(false);
 }
 
 export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
@@ -109,4 +109,51 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
     throw await toApiError(response);
   }
   return parseResponse<T>(response);
+}
+
+export type DownloadResult = {
+  blob: Blob;
+  filename: string | null;
+};
+
+function headerFilename(contentDisposition: string | null): string | null {
+  if (!contentDisposition) {
+    return null;
+  }
+  const filenameStar = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (filenameStar?.[1]) {
+    try {
+      return sanitizeDownloadedFilename(decodeURIComponent(filenameStar[1]));
+    } catch {
+      return sanitizeDownloadedFilename(filenameStar[1]);
+    }
+  }
+  const filename = contentDisposition.match(/filename="?([^";]+)"?/i);
+  return filename?.[1] ? sanitizeDownloadedFilename(filename[1]) : null;
+}
+
+export function sanitizeDownloadedFilename(filename: string): string {
+  const sanitized = filename.replace(/[\\/\u0000-\u001f\u007f]+/g, "_").replace(/\s+/g, " ").trim().replace(/^\.+$/, "");
+  return sanitized || "download";
+}
+
+export async function apiDownload(path: string, fallbackFilename = "download", retryOnUnauthorized = true): Promise<DownloadResult> {
+  const response = await fetch(buildUrl(path), {
+    method: "GET",
+    headers: buildHeaders(null, undefined),
+    credentials: "include",
+  });
+  const isAuthEndpoint = path.includes("/auth/");
+  if (response.status === 401 && retryOnUnauthorized && !isAuthEndpoint) {
+    const refreshed = await refreshOnce();
+    if (refreshed) {
+      return apiDownload(path, fallbackFilename, false);
+    }
+    useAuthStore.getState().clearSession();
+  }
+  if (!response.ok) {
+    throw await toApiError(response);
+  }
+  const blob = await response.blob();
+  return { blob, filename: headerFilename(response.headers.get("Content-Disposition")) ?? sanitizeDownloadedFilename(fallbackFilename) };
 }

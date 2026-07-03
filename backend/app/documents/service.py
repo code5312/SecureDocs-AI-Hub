@@ -1,9 +1,11 @@
 import uuid
 from datetime import UTC, datetime
 
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.audit.service import AuditService
+from app.documents.downloads import DocumentDownload
 from app.documents.permissions import can_delete, can_download, can_view_metadata
 from app.documents.repository import DocumentRepository
 from app.documents.storage import DocumentStorage
@@ -70,17 +72,37 @@ class DocumentService:
         self.db.commit()
         return document
 
-    def download(self, actor: User, document_id: uuid.UUID) -> str:
+    def download(self, actor: User, document_id: uuid.UUID) -> DocumentDownload:
         document = self.documents.get(document_id)
         if document is None or document.is_deleted:
+            self._record_download_failure(actor, None, None, ErrorCode.DOCUMENT_NOT_FOUND)
             raise api_error(404, ErrorCode.DOCUMENT_NOT_FOUND, "문서를 찾을 수 없습니다.")
         if not can_download(actor, document):
+            self._record_download_failure(actor, document, None, ErrorCode.DOCUMENT_DOWNLOAD_DENIED)
             raise api_error(403, ErrorCode.DOCUMENT_DOWNLOAD_DENIED, "다운로드 권한이 없습니다.")
         version = self._current_version(document)
-        url = self.storage.presigned_download_url(version.storage_key)
+        try:
+            stat = self.storage.stat_object(version.storage_key)
+            stream = self.storage.open_download_stream(version.storage_key)
+        except HTTPException as exc:
+            error_code = exc.detail.get("error", {}).get("code") if isinstance(exc.detail, dict) else ErrorCode.DOCUMENT_DOWNLOAD_FAILED
+            self._record_download_failure(actor, document, version, error_code)
+            raise
+        except Exception:
+            self._record_download_failure(actor, document, version, ErrorCode.DOCUMENT_DOWNLOAD_FAILED)
+            raise
         self.audit.record(action=AuditAction.DOCUMENT_DOWNLOAD, actor_id=actor.id, target_type="Document", target_id=str(document.id), details={"document_id": str(document.id), "version_id": str(version.id), "filename": version.normalized_filename, "file_size": version.file_size, "mime_type": version.mime_type, "checksum": version.checksum_sha256, "result": "success"})
         self.db.commit()
-        return url
+        return DocumentDownload(filename=version.original_filename or version.normalized_filename, content_type=version.mime_type or stat.content_type or "application/octet-stream", content_length=stat.size or version.file_size, stream=stream.iterator)
+
+    def _record_download_failure(self, actor: User, document: Document | None, version: DocumentVersion | None, error_code: str) -> None:
+        details = {"result": "failed", "error_code": error_code}
+        if document is not None:
+            details["document_id"] = str(document.id)
+        if version is not None:
+            details.update({"version_id": str(version.id), "filename": version.normalized_filename})
+        self.audit.record(action=AuditAction.DOCUMENT_DOWNLOAD, actor_id=actor.id, target_type="Document", target_id=str(document.id) if document else None, details=details)
+        self.db.commit()
 
     def delete(self, actor: User, document_id: uuid.UUID) -> Document:
         document = self.documents.get(document_id)

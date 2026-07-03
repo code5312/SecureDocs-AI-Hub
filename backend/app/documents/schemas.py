@@ -31,8 +31,3 @@ class DocumentRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     current_version: DocumentVersionRead | None = None
-
-
-class DownloadUrlResponse(BaseModel):
-    url: str
-    expires_in: int

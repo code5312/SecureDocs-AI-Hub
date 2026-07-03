@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from app.audit.repository import AuditRepository
 from app.models.enums import AuditAction
 
-SENSITIVE_KEYS = {"password", "password_hash", "access_token", "refresh_token", "token"}
+SENSITIVE_KEYS = {"password", "password_hash", "access_token", "refresh_token", "token", "storage_key", "presigned_url", "url"}
 
 
 def sanitize_details(details: dict | None) -> dict | None:

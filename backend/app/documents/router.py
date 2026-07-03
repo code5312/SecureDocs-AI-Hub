@@ -1,12 +1,13 @@
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.config.settings import get_settings
 from app.database.session import get_db
 from app.dependencies.auth import get_current_user, request_ip
-from app.documents.schemas import DocumentRead, DocumentVersionRead, DownloadUrlResponse
+from app.documents.downloads import content_disposition
+from app.documents.schemas import DocumentRead, DocumentVersionRead
 from app.documents.service import DocumentService
 from app.models.enums import DocumentStatus
 from app.models.user import User
@@ -39,10 +40,16 @@ def get_document(document_id: uuid.UUID, current_user: User = Depends(get_curren
     return _read_document(DocumentService(db).get_document(current_user, document_id))
 
 
-@router.get("/{document_id}/download", response_model=DownloadUrlResponse)
-def download_document(document_id: uuid.UUID, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> DownloadUrlResponse:
-    url = DocumentService(db).download(current_user, document_id)
-    return DownloadUrlResponse(url=url, expires_in=get_settings().document_download_url_expires_seconds)
+@router.get("/{document_id}/download", response_class=StreamingResponse)
+def download_document(document_id: uuid.UUID, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> StreamingResponse:
+    download = DocumentService(db).download(current_user, document_id)
+    headers = {
+        "Content-Disposition": content_disposition(download.filename),
+        "Content-Length": str(download.content_length),
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
+    return StreamingResponse(download.stream, media_type=download.content_type, headers=headers)
 
 
 @router.delete("/{document_id}", response_model=DocumentRead)

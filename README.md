@@ -285,7 +285,7 @@ curl -i -X POST http://localhost/api/v1/documents \
   -F "file=@policy.pdf;type=application/pdf"
 ```
 
-다운로드는 `GET /api/v1/documents/{document_id}/download`에서 짧은 만료 시간을 가진 presigned URL을 반환합니다. 만료 시간은 `DOCUMENT_DOWNLOAD_URL_EXPIRES_SECONDS`로 관리합니다. 목록 조회 감사 로그는 과도한 로그 생성을 피하기 위해 현재 기록하지 않고, 업로드·상세조회·다운로드·삭제만 기록합니다.
+다운로드는 `GET /api/v1/documents/{document_id}/download`에서 presigned URL을 반환하지 않고 백엔드 `StreamingResponse`로 원본 파일을 전달합니다. 목록 조회 감사 로그는 과도한 로그 생성을 피하기 위해 현재 기록하지 않고, 업로드·상세조회·다운로드·삭제만 기록합니다.
 
 ### 아직 구현하지 않은 문서 기능
 
@@ -329,3 +329,38 @@ npm run lint
 npm run build
 npm run test:auth
 ```
+
+## 문서 다운로드 스트리밍
+
+문서 다운로드는 MinIO presigned URL을 브라우저에 반환하지 않고 백엔드가 MinIO 객체를 열어 `StreamingResponse`로 전달합니다. 이 구조는 Docker 내부 호스트명인 `minio:9000`을 브라우저에 노출하지 않고, 다운로드 직전까지 Access Token 인증과 역할·소유권 기반 권한 검사를 백엔드에서 유지하기 위한 선택입니다.
+
+다운로드 응답에는 저장된 MIME 타입, `Content-Length`, `Cache-Control: private, no-store`, `X-Content-Type-Options: nosniff`, 그리고 RFC 5987 형식의 `Content-Disposition`을 설정합니다. 파일명은 원본 파일명 또는 정규화 파일명을 기반으로 하되 CR/LF, NUL, 따옴표, 경로 구분자 등 헤더 인젝션과 경로 조작에 사용할 수 있는 문자를 제거합니다. `storage_key`, MinIO endpoint, access key, secret key는 응답과 감사 로그에 포함하지 않습니다.
+
+현재 MVP는 동기 MinIO SDK 응답을 청크 단위로 `StreamingResponse`에 연결합니다. 스트림 반복이 끝나거나 예외가 발생하면 MinIO 응답 객체의 `close()`와 `release_conn()`을 호출해 네트워크 자원을 해제합니다. 대용량 파일과 많은 동시 다운로드에서는 워커 수, 전용 파일 전송 계층, 비동기 object storage client 또는 내부 가속 프록시를 검토해야 합니다.
+
+다운로드 감사 로그는 성공 시 `DOCUMENT_DOWNLOAD`에 `result=success`를 기록하고, 실패 시 같은 action에 `result=failed`와 안전한 오류 코드만 기록합니다. 감사 로그에는 문서 본문, 파일 바이너리, `storage_key`, presigned URL, MinIO credential, Access Token, Refresh Token을 저장하지 않습니다. 감사 로그 저장 실패가 스트림 중간 손상을 만들지 않도록 현재는 스트림을 열기 전 메타데이터와 감사 로그를 처리합니다.
+
+프론트엔드는 다운로드 API를 JSON URL 응답으로 처리하지 않고 인증 API client의 Blob 다운로드 함수를 사용합니다. 응답의 `Content-Disposition`에서 `filename*`, `filename` 순서로 파일명을 추출하고, 없으면 현재 문서 파일명 또는 안전한 기본 이름을 사용합니다. 생성한 object URL은 클릭 후 즉시 `URL.revokeObjectURL()`로 해제합니다.
+
+### npm 재현성
+
+프론트엔드는 npm을 단일 패키지 매니저로 사용합니다. 의존성 설치가 가능한 환경에서는 다음 명령으로 `package-lock.json`을 생성 또는 갱신하고 커밋해야 합니다.
+
+```bash
+cd frontend
+npm install
+npm ci
+```
+
+현재 저장소는 `node_modules`를 커밋하지 않습니다. lock 파일이 생성된 뒤에는 Dockerfile의 dependency 설치도 재현 가능한 `npm ci` 기반으로 전환해야 합니다. 현재 실행 환경에서는 registry 403으로 lock 파일 생성을 완료하지 못했으므로 Dockerfile의 기존 `npm install` 동작은 유지했습니다.
+
+### 업로드·다운로드 무결성 확인
+
+TXT 또는 PDF를 업로드한 뒤 다운로드 파일과 원본 파일의 SHA-256을 비교합니다.
+
+```bash
+sha256sum sample.txt
+sha256sum downloaded-sample.txt
+```
+
+두 값이 같으면 MinIO 저장과 백엔드 스트리밍 다운로드 과정에서 파일 내용이 보존된 것입니다.
