@@ -58,3 +58,11 @@ def test_settings_reads_json_array_cors_origins_from_environment(monkeypatch) ->
     settings = Settings(_env_file=None)
 
     assert settings.cors_origins == ["http://localhost", "http://localhost:3000"]
+
+
+def test_settings_uses_no_env_json_decoding_for_comma_separated_cors(monkeypatch) -> None:
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost,http://localhost:3000")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.cors_origins == ["http://localhost", "http://localhost:3000"]
