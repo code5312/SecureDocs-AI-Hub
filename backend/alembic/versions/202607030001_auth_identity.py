@@ -13,8 +13,29 @@ down_revision = None
 branch_labels = None
 depends_on = None
 
-user_role = postgresql.ENUM("SYSTEM_ADMIN", "DOCUMENT_ADMIN", "DEPARTMENT_MANAGER", "USER", name="user_role")
-audit_action = postgresql.ENUM("LOGIN_SUCCESS", "LOGIN_FAILED", "TOKEN_REFRESH", "LOGOUT", "USER_CREATE", "USER_UPDATE", "USER_ACTIVATE", "USER_DEACTIVATE", "USER_ROLE_CHANGE", "DEPARTMENT_CREATE", "DEPARTMENT_UPDATE", name="audit_action")
+user_role = postgresql.ENUM(
+    "SYSTEM_ADMIN",
+    "DOCUMENT_ADMIN",
+    "DEPARTMENT_MANAGER",
+    "USER",
+    name="user_role",
+    create_type=False,
+)
+audit_action = postgresql.ENUM(
+    "LOGIN_SUCCESS",
+    "LOGIN_FAILED",
+    "TOKEN_REFRESH",
+    "LOGOUT",
+    "USER_CREATE",
+    "USER_UPDATE",
+    "USER_ACTIVATE",
+    "USER_DEACTIVATE",
+    "USER_ROLE_CHANGE",
+    "DEPARTMENT_CREATE",
+    "DEPARTMENT_UPDATE",
+    name="audit_action",
+    create_type=False,
+)
 
 
 def upgrade() -> None:

@@ -13,7 +13,7 @@ down_revision = "202607030001"
 branch_labels = None
 depends_on = None
 
-document_status = postgresql.ENUM("ACTIVE", "PROCESSING", "FAILED", name="document_status")
+document_status = postgresql.ENUM("ACTIVE", "PROCESSING", "FAILED", name="document_status", create_type=False)
 
 
 def upgrade() -> None:
