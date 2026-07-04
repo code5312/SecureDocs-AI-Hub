@@ -55,10 +55,11 @@ curl -fsSI http://localhost/ >/dev/null
 docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT extname FROM pg_extension WHERE extname = 'vector';"
 docker compose exec -T backend alembic upgrade head
 docker compose run --rm minio-init
-cd backend
-python -m pytest
-cd ../frontend
+docker compose run --rm backend-test python -m pytest -v
+cd frontend
 npm ci
+npm run test:auth
+npm run test:documents
 npm run type-check
 npm run lint
 npm run build

@@ -27,3 +27,12 @@ def can_delete(user: User, document: Document) -> bool:
     if user.role == UserRole.SYSTEM_ADMIN:
         return True
     return document.owner_id == user.id
+
+
+def can_upload_version(user: User, document: Document) -> bool:
+    """Return whether a user may append a new version under the temporary ACL policy."""
+    if document.is_deleted:
+        return False
+    if user.role == UserRole.SYSTEM_ADMIN:
+        return True
+    return document.owner_id == user.id

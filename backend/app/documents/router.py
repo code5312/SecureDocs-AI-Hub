@@ -9,17 +9,37 @@ from app.dependencies.auth import get_current_user, request_ip
 from app.documents.downloads import content_disposition
 from app.documents.schemas import DocumentRead, DocumentVersionRead
 from app.documents.service import DocumentService
+from app.models.document import Document, DocumentVersion
 from app.models.enums import DocumentStatus
 from app.models.user import User
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 
-def _read_document(document) -> DocumentRead:
+def _version_read(version: DocumentVersion | None, current_version_id: uuid.UUID | None) -> DocumentVersionRead | None:
+    if version is None:
+        return None
+    payload = DocumentVersionRead.model_validate(version)
+    payload.is_current = version.id == current_version_id
+    return payload
+
+
+def _read_document(document: Document) -> DocumentRead:
     version = next((item for item in document.versions if item.id == document.current_version_id), None)
     payload = DocumentRead.model_validate(document)
-    payload.current_version = DocumentVersionRead.model_validate(version) if version else None
+    payload.current_version = _version_read(version, document.current_version_id)
     return payload
+
+
+def _streaming_response(download) -> StreamingResponse:
+    headers = {
+        "Content-Disposition": content_disposition(download.filename),
+        "Content-Length": str(download.content_length),
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(download.stream, media_type=download.content_type, headers=headers)
 
 
 @router.post("", response_model=DocumentRead, status_code=201)
@@ -37,6 +57,29 @@ def list_documents(current_user: User = Depends(get_current_user), db: Session =
     return [_read_document(document) for document in documents]
 
 
+@router.post("/{document_id}/versions", response_model=DocumentRead, status_code=201)
+async def upload_document_version(document_id: uuid.UUID, request: Request, file: UploadFile = File(...), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> DocumentRead:
+    try:
+        document = DocumentService(db).upload_version(document_id=document_id, filename=file.filename or "upload", content_type=file.content_type, file_obj=file.file, actor=current_user, ip_address=request_ip(request), user_agent=request.headers.get("user-agent"))
+        return _read_document(document)
+    finally:
+        await file.close()
+
+
+@router.get("/{document_id}/versions", response_model=list[DocumentVersionRead])
+def list_document_versions(document_id: uuid.UUID, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> list[DocumentVersionRead]:
+    service = DocumentService(db)
+    document = service.get_document(current_user, document_id)
+    versions = service.list_versions(current_user, document_id)
+    return [item for item in (_version_read(version, document.current_version_id) for version in versions) if item is not None]
+
+
+@router.get("/{document_id}/versions/{version_id}/download", response_class=StreamingResponse)
+def download_document_version(document_id: uuid.UUID, version_id: uuid.UUID, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> StreamingResponse:
+    download = DocumentService(db).download_version(current_user, document_id, version_id)
+    return _streaming_response(download)
+
+
 @router.get("/{document_id}", response_model=DocumentRead)
 def get_document(document_id: uuid.UUID, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> DocumentRead:
     return _read_document(DocumentService(db).get_document(current_user, document_id))
@@ -45,14 +88,7 @@ def get_document(document_id: uuid.UUID, current_user: User = Depends(get_curren
 @router.get("/{document_id}/download", response_class=StreamingResponse)
 def download_document(document_id: uuid.UUID, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> StreamingResponse:
     download = DocumentService(db).download(current_user, document_id)
-    headers = {
-        "Content-Disposition": content_disposition(download.filename),
-        "Content-Length": str(download.content_length),
-        "Cache-Control": "private, no-store",
-        "X-Content-Type-Options": "nosniff",
-        "X-Accel-Buffering": "no",
-    }
-    return StreamingResponse(download.stream, media_type=download.content_type, headers=headers)
+    return _streaming_response(download)
 
 
 @router.delete("/{document_id}", response_model=DocumentRead)

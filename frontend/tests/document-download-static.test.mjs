@@ -14,4 +14,4 @@ assert(documentsApi.includes("URL.createObjectURL"), "Document download must cre
 assert(documentsApi.includes("URL.revokeObjectURL"), "Document download must revoke the object URL");
 assert(!documentsApi.includes("window.location.assign"), "Document download must not navigate to presigned URLs");
 assert(!/access_token|Authorization=.*[?&]/i.test(documentsApi), "Access Token must not be placed in a URL");
-assert(detailActions.includes("disabled={isDownloading}"), "Download button must prevent duplicate clicks while downloading");
+assert(detailActions.includes("disabled={Boolean(isDownloading)}") || detailActions.includes("disabled={isDownloading}"), "Download button must prevent duplicate clicks while downloading");

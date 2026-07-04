@@ -1,5 +1,6 @@
 import uuid
-from sqlalchemy import select
+
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.document import Document, DocumentVersion
@@ -22,6 +23,20 @@ class DocumentRepository:
 
     def get(self, document_id: uuid.UUID) -> Document | None:
         return self.db.scalar(select(Document).options(selectinload(Document.versions)).where(Document.id == document_id))
+
+    def get_for_update(self, document_id: uuid.UUID) -> Document | None:
+        """Lock a document row while calculating the next version number."""
+        return self.db.scalar(select(Document).options(selectinload(Document.versions)).where(Document.id == document_id).with_for_update())
+
+    def get_version(self, document_id: uuid.UUID, version_id: uuid.UUID) -> DocumentVersion | None:
+        return self.db.scalar(select(DocumentVersion).where(DocumentVersion.document_id == document_id, DocumentVersion.id == version_id))
+
+    def list_versions(self, document_id: uuid.UUID) -> list[DocumentVersion]:
+        stmt = select(DocumentVersion).where(DocumentVersion.document_id == document_id).order_by(DocumentVersion.version_number.desc())
+        return list(self.db.scalars(stmt))
+
+    def get_max_version_number(self, document_id: uuid.UUID) -> int:
+        return int(self.db.scalar(select(func.coalesce(func.max(DocumentVersion.version_number), 0)).where(DocumentVersion.document_id == document_id)) or 0)
 
     def list(self, *, offset: int, limit: int, title: str | None = None, owner_id: uuid.UUID | None = None, department_id: uuid.UUID | None = None, status: DocumentStatus | None = None, include_deleted: bool = False) -> list[Document]:
         stmt = select(Document).options(selectinload(Document.versions)).order_by(Document.created_at.desc()).offset(offset).limit(limit)

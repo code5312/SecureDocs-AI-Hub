@@ -16,6 +16,7 @@ class DocumentVersionRead(BaseModel):
     checksum_sha256: str
     uploaded_by: uuid.UUID
     created_at: datetime
+    is_current: bool = False
 
 
 class DocumentRead(BaseModel):
