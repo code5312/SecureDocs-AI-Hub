@@ -24,9 +24,11 @@ def _read_document(document) -> DocumentRead:
 
 @router.post("", response_model=DocumentRead, status_code=201)
 async def upload_document(request: Request, title: str = Form(...), description: str | None = Form(None), file: UploadFile = File(...), current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> DocumentRead:
-    data = await file.read()
-    document = DocumentService(db).upload(title=title, description=description, filename=file.filename or "upload", content_type=file.content_type, data=data, actor=current_user, ip_address=request_ip(request), user_agent=request.headers.get("user-agent"))
-    return _read_document(document)
+    try:
+        document = DocumentService(db).upload(title=title, description=description, filename=file.filename or "upload", content_type=file.content_type, file_obj=file.file, actor=current_user, ip_address=request_ip(request), user_agent=request.headers.get("user-agent"))
+        return _read_document(document)
+    finally:
+        await file.close()
 
 
 @router.get("", response_model=list[DocumentRead])
@@ -48,6 +50,7 @@ def download_document(document_id: uuid.UUID, current_user: User = Depends(get_c
         "Content-Length": str(download.content_length),
         "Cache-Control": "private, no-store",
         "X-Content-Type-Options": "nosniff",
+        "X-Accel-Buffering": "no",
     }
     return StreamingResponse(download.stream, media_type=download.content_type, headers=headers)
 

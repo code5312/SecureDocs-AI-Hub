@@ -265,7 +265,7 @@ curl -i -X POST http://localhost/api/v1/auth/login \
 
 ### 체크섬과 MIME 검증
 
-업로드 바이트에서 SHA-256 체크섬을 계산해 `document_versions.checksum_sha256`에 저장합니다. 확장자와 Content-Type을 함께 확인하고 PDF/Office Open XML 파일은 기본 파일 서명도 확인합니다. ClamAV 연동 위치는 `documents.validators` 이후 업로드 전 단계이며, 현재 실제 ClamAV 검사는 수행하지 않습니다.
+업로드 stream을 1MB 청크 단위로 읽으면서 SHA-256 체크섬을 계산해 `document_versions.checksum_sha256`에 저장합니다. 확장자와 Content-Type을 함께 확인하고 PDF signature 및 Office Open XML 필수 ZIP entry를 확인합니다. ClamAV 연동 위치는 `documents.validators` 이후 MinIO 저장 전 단계이며, 현재 실제 ClamAV 검사는 수행하지 않습니다.
 
 ### 임시 접근제어 정책
 
@@ -338,13 +338,13 @@ npm run test:auth
 
 현재 MVP는 동기 MinIO SDK 응답을 청크 단위로 `StreamingResponse`에 연결합니다. 스트림 반복이 끝나거나 예외가 발생하면 MinIO 응답 객체의 `close()`와 `release_conn()`을 호출해 네트워크 자원을 해제합니다. 대용량 파일과 많은 동시 다운로드에서는 워커 수, 전용 파일 전송 계층, 비동기 object storage client 또는 내부 가속 프록시를 검토해야 합니다.
 
-다운로드 감사 로그는 성공 시 `DOCUMENT_DOWNLOAD`에 `result=success`를 기록하고, 실패 시 같은 action에 `result=failed`와 안전한 오류 코드만 기록합니다. 감사 로그에는 문서 본문, 파일 바이너리, `storage_key`, presigned URL, MinIO credential, Access Token, Refresh Token을 저장하지 않습니다. 감사 로그 저장 실패가 스트림 중간 손상을 만들지 않도록 현재는 스트림을 열기 전 메타데이터와 감사 로그를 처리합니다.
+다운로드 감사 로그는 객체 확인과 stream open 성공 시 `DOCUMENT_DOWNLOAD`에 `result=started`를 먼저 기록하고, stream open 전 실패 시 같은 action에 `result=failed`와 안전한 오류 코드만 기록합니다. 응답 스트림 반복이 정상 종료되면 request-scoped 세션과 분리된 짧은 독립 DB 세션으로 `result=completed`를 기록하고, 스트림이 끝까지 반복되지 못하면 `result=interrupted`를 기록합니다. 감사 로그에는 문서 본문, 파일 바이너리, `storage_key`, presigned URL, MinIO credential, Access Token, Refresh Token을 저장하지 않습니다.
 
 프론트엔드는 다운로드 API를 JSON URL 응답으로 처리하지 않고 인증 API client의 Blob 다운로드 함수를 사용합니다. 응답의 `Content-Disposition`에서 `filename*`, `filename` 순서로 파일명을 추출하고, 없으면 현재 문서 파일명 또는 안전한 기본 이름을 사용합니다. 생성한 object URL은 클릭 후 즉시 `URL.revokeObjectURL()`로 해제합니다.
 
 ### npm 재현성
 
-프론트엔드는 npm을 단일 패키지 매니저로 사용합니다. 의존성 설치가 가능한 환경에서는 다음 명령으로 `package-lock.json`을 생성 또는 갱신하고 커밋해야 합니다.
+프론트엔드는 npm을 단일 패키지 매니저로 사용하며 `frontend/package-lock.json`을 기준으로 재현 가능한 설치를 수행합니다.
 
 ```bash
 cd frontend
@@ -352,7 +352,7 @@ npm install
 npm ci
 ```
 
-현재 저장소는 `node_modules`를 커밋하지 않습니다. lock 파일이 생성된 뒤에는 Dockerfile의 dependency 설치도 재현 가능한 `npm ci` 기반으로 전환해야 합니다. 현재 실행 환경에서는 registry 403으로 lock 파일 생성을 완료하지 못했으므로 Dockerfile의 기존 `npm install` 동작은 유지했습니다.
+현재 저장소는 `frontend/package-lock.json`을 커밋하고 `node_modules`는 커밋하지 않습니다. frontend Dockerfile은 재현 가능한 의존성 설치를 위해 `package.json`과 `package-lock.json`을 명시적으로 복사한 뒤 `npm ci`를 사용합니다.
 
 ### 업로드·다운로드 무결성 확인
 
@@ -364,3 +364,21 @@ sha256sum downloaded-sample.txt
 ```
 
 두 값이 같으면 MinIO 저장과 백엔드 스트리밍 다운로드 과정에서 파일 내용이 보존된 것입니다.
+
+## 업로드 전송 경로 안정화
+
+문서 업로드는 더 이상 FastAPI router에서 `await file.read()`로 전체 파일을 단일 `bytes` 객체에 적재하지 않습니다. `UploadFile.file`의 seek 가능한 임시 파일 객체를 서비스 계층에 전달하고, validator가 1MB 청크 단위로 읽으면서 누적 크기와 SHA-256을 계산합니다. 읽는 도중 backend 최대 크기인 `DOCUMENT_MAX_UPLOAD_SIZE_MB=50`을 초과하면 즉시 `DOCUMENT_FILE_TOO_LARGE`로 중단하며, 검증 후 `seek(0)`으로 포인터를 되돌려 MinIO `put_object`에 정확한 length와 stream을 전달합니다.
+
+### 강화된 파일 형식 검증
+
+PDF는 `%PDF-` signature를 확인합니다. DOCX, PPTX, XLSX는 단순 ZIP signature만으로 허용하지 않고 ZIP 구조를 열어 `[Content_Types].xml`과 각각 `word/document.xml`, `ppt/presentation.xml`, `xl/workbook.xml` 필수 entry를 확인합니다. ZIP 기반 문서는 entry 수, 총 uncompressed size, 절대 경로, `../` traversal, 암호화 flag, 손상된 ZIP을 제한합니다. 이 검사는 ZIP bomb을 완벽히 탐지한다고 보장하지 않고 MVP 단계의 합리적 완화 상한입니다.
+
+TXT와 MD는 NUL byte, ELF signature, PE/MZ signature, 높은 바이너리 제어문자 비율을 차단하고 UTF-8 decoding이 가능한 파일만 허용합니다. ClamAV 같은 악성코드 검사는 아직 수행하지 않으며, 향후 위치는 파일 형식 검증 이후 MinIO 저장 이전 단계입니다.
+
+### Nginx 업로드 및 다운로드 전송 정책
+
+Nginx `client_max_body_size`는 backend 파일 제한 50MB보다 작지 않도록 multipart overhead를 고려해 `55m`로 설정합니다. 최종 파일 크기 검증은 여전히 backend가 수행합니다. 문서 다운로드 경로 `/api/v1/documents/{document_id}/download`는 대용량 응답을 불필요하게 버퍼링하지 않도록 별도 location에서 `proxy_buffering off`, `proxy_request_buffering off`, `proxy_read_timeout 300s`를 적용하고 Authorization 및 forwarded header를 유지합니다. Backend도 다운로드 응답에 `X-Accel-Buffering: no`를 추가합니다.
+
+### 다운로드 감사 로그 상태
+
+다운로드 감사 로그의 `DOCUMENT_DOWNLOAD` details.result는 `started`, `completed`, `interrupted`, `failed`를 사용합니다. 객체 확인과 stream open 성공 후 응답을 시작할 수 있는 상태가 되면 `started`로 기록하고, stream open 전 오류는 `failed`와 안전한 error_code로 기록합니다. chunk 전송이 끝까지 완료되면 `completed`, generator가 정상 종료 전에 정리되면 `interrupted`를 request-scoped 세션과 분리된 짧은 독립 DB 세션으로 기록합니다. 최종 감사 로그 기록 실패는 파일 전송을 손상시키지 않도록 민감정보 없이 warning으로만 남깁니다. 스트리밍 응답이 시작된 뒤에는 JSON 오류 응답으로 되돌릴 수 없습니다.

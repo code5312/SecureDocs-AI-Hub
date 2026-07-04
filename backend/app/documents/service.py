@@ -1,19 +1,24 @@
+import logging
 import uuid
 from datetime import UTC, datetime
+from typing import BinaryIO, Iterator
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.audit.service import AuditService
+from app.database.session import SessionLocal
 from app.documents.downloads import DocumentDownload
 from app.documents.permissions import can_delete, can_download, can_view_metadata
 from app.documents.repository import DocumentRepository
 from app.documents.storage import DocumentStorage
-from app.documents.validators import validate_title, validate_upload_bytes
+from app.documents.validators import validate_title, validate_upload_stream
 from app.exceptions import ErrorCode, api_error
 from app.models.document import Document, DocumentVersion
 from app.models.enums import AuditAction, DocumentStatus, UserRole
 from app.models.user import User
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentService:
@@ -28,9 +33,9 @@ class DocumentService:
         self.storage = storage or DocumentStorage()
         self.audit = AuditService(db)
 
-    def upload(self, *, title: str, description: str | None, filename: str, content_type: str | None, data: bytes, actor: User, ip_address: str | None, user_agent: str | None) -> Document:
+    def upload(self, *, title: str, description: str | None, filename: str, content_type: str | None, file_obj: BinaryIO, actor: User, ip_address: str | None, user_agent: str | None) -> Document:
         cleaned_title = validate_title(title)
-        result = validate_upload_bytes(filename, content_type, data)
+        result = validate_upload_stream(filename, content_type, file_obj)
         document_id = uuid.uuid4()
         version_id = uuid.uuid4()
         storage_key = f"documents/{actor.id}/{document_id}/{version_id}/{uuid.uuid4()}{result.extension}"
@@ -39,7 +44,7 @@ class DocumentService:
             self.documents.create_document(document)
             version = DocumentVersion(id=version_id, document_id=document.id, version_number=1, original_filename=filename[:255], normalized_filename=result.normalized_filename, storage_key=storage_key, mime_type=result.mime_type, file_size=result.file_size, checksum_sha256=result.checksum_sha256, uploaded_by=actor.id)
             self.documents.create_version(version)
-            self.storage.upload(storage_key, data, result.mime_type)
+            self.storage.upload(storage_key, file_obj, result.file_size, result.mime_type)
             document.current_version_id = version.id
             document.status = DocumentStatus.ACTIVE
             self.audit.record(action=AuditAction.DOCUMENT_UPLOAD, actor_id=actor.id, target_type="Document", target_id=str(document.id), ip_address=ip_address, user_agent=user_agent, details={"document_id": str(document.id), "version_id": str(version.id), "filename": result.normalized_filename, "file_size": result.file_size, "mime_type": result.mime_type, "checksum": result.checksum_sha256, "result": "success"})
@@ -91,9 +96,26 @@ class DocumentService:
         except Exception:
             self._record_download_failure(actor, document, version, ErrorCode.DOCUMENT_DOWNLOAD_FAILED)
             raise
-        self.audit.record(action=AuditAction.DOCUMENT_DOWNLOAD, actor_id=actor.id, target_type="Document", target_id=str(document.id), details={"document_id": str(document.id), "version_id": str(version.id), "filename": version.normalized_filename, "file_size": version.file_size, "mime_type": version.mime_type, "checksum": version.checksum_sha256, "result": "success"})
+        audit_details = {"document_id": str(document.id), "version_id": str(version.id), "filename": version.normalized_filename, "file_size": version.file_size, "mime_type": version.mime_type, "checksum": version.checksum_sha256}
+        self.audit.record(action=AuditAction.DOCUMENT_DOWNLOAD, actor_id=actor.id, target_type="Document", target_id=str(document.id), details={**audit_details, "result": "started"})
         self.db.commit()
-        return DocumentDownload(filename=version.original_filename or version.normalized_filename, content_type=version.mime_type or stat.content_type or "application/octet-stream", content_length=stat.size or version.file_size, stream=stream.iterator)
+        return DocumentDownload(filename=version.original_filename or version.normalized_filename, content_type=version.mime_type or stat.content_type or "application/octet-stream", content_length=stat.size or version.file_size, stream=self._audit_download_stream(stream.iterator, actor.id, str(document.id), audit_details))
+
+    def _audit_download_stream(self, source: Iterator[bytes], actor_id: uuid.UUID, document_id: str, audit_details: dict) -> Iterator[bytes]:
+        """Yield a MinIO stream and record post-response download state in a short DB session."""
+        completed = False
+        try:
+            for chunk in source:
+                yield chunk
+            completed = True
+        finally:
+            result = "completed" if completed else "interrupted"
+            try:
+                with SessionLocal() as db:
+                    AuditService(db).record(action=AuditAction.DOCUMENT_DOWNLOAD, actor_id=actor_id, target_type="Document", target_id=document_id, details={**audit_details, "result": result})
+                    db.commit()
+            except Exception as exc:  # pragma: no cover - download bytes must not be corrupted by audit persistence failure
+                logger.warning("download audit finalization failed for document_id=%s result=%s", document_id, result, exc_info=exc)
 
     def _record_download_failure(self, actor: User, document: Document | None, version: DocumentVersion | None, error_code: str) -> None:
         details = {"result": "failed", "error_code": error_code}

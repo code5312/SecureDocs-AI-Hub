@@ -1,6 +1,5 @@
 from dataclasses import dataclass
-from io import BytesIO
-from typing import Iterator
+from typing import BinaryIO, Iterator
 
 from minio.error import S3Error
 
@@ -27,10 +26,11 @@ class DocumentStorage:
         self.client = get_minio_client()
         self.bucket = self.settings.minio_document_bucket
 
-    def upload(self, storage_key: str, data: bytes, mime_type: str) -> None:
+    def upload(self, storage_key: str, stream: BinaryIO, length: int, mime_type: str) -> None:
         try:
             self.ensure_bucket()
-            self.client.put_object(self.bucket, storage_key, BytesIO(data), length=len(data), content_type=mime_type)
+            stream.seek(0)
+            self.client.put_object(self.bucket, storage_key, stream, length=length, content_type=mime_type)
         except S3Error as exc:
             raise api_error(503, ErrorCode.DOCUMENT_UPLOAD_FAILED, "문서 저장 중 오류가 발생했습니다.") from exc
         except Exception as exc:
