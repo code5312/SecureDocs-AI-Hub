@@ -9,7 +9,7 @@
     "lint": "eslint .",
     "type-check": "tsc --noEmit",
     "test:auth": "node tests/auth-client-static.test.mjs",
-    "test:documents": "node tests/document-download-static.test.mjs && node tests/document-version-ui-static.test.mjs"
+    "test:documents": "node tests/document-download-static.test.mjs && node tests/document-version-ui-static.test.mjs && node tests/document-acl-ui-static.test.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "5.62.11",

@@ -1,5 +1,7 @@
 export type DocumentStatus = "ACTIVE" | "PROCESSING" | "FAILED";
 
+export type DocumentPermission = "VIEW_METADATA" | "READ_CONTENT" | "UPLOAD_VERSION" | "DELETE" | "MANAGE_ACL";
+
 export type DocumentVersion = {
   id: string;
   version_number: number;
@@ -25,6 +27,22 @@ export type DocumentRecord = {
   created_at: string;
   updated_at: string;
   current_version: DocumentVersion | null;
+  effective_permissions: DocumentPermission[];
+};
+
+export type DocumentAclEntry = {
+  id: string;
+  principal_type: "USER" | "DEPARTMENT";
+  user: { id: string; name: string; email: string; department_id: string | null } | null;
+  department: { id: string; name: string } | null;
+  permission: DocumentPermission;
+  granted_by: string | null;
+  created_at: string;
+};
+
+export type DocumentAclPrincipalSearch = {
+  users: Array<{ id: string; name: string; email: string; department_id: string | null }>;
+  departments: Array<{ id: string; name: string }>;
 };
 
 export type DocumentListItem = DocumentRecord;
@@ -37,6 +55,14 @@ export type DocumentListParams = {
 };
 
 export const allowedDocumentExtensions = ["PDF", "DOCX", "PPTX", "XLSX", "TXT", "MD"];
+
+export const documentPermissionLabels: Record<DocumentPermission, string> = {
+  VIEW_METADATA: "문서 정보 보기",
+  READ_CONTENT: "문서 내용 읽기 및 다운로드",
+  UPLOAD_VERSION: "새 버전 업로드",
+  DELETE: "문서 삭제",
+  MANAGE_ACL: "공유 및 권한 관리",
+};
 
 export function formatFileSize(size: number): string {
   if (size < 1024) {

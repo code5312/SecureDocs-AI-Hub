@@ -14,7 +14,7 @@ assert(listPage.includes("FormData") || documentsApi.includes("new FormData"), "
 assert(detailPage.includes("getDocument") && detailPage.includes("listDocumentVersions"), "Detail page must load document and versions");
 assert(actions.includes("uploadDocumentVersion"), "Detail actions must support new version uploads");
 assert(actions.includes("downloadDocumentVersion"), "Detail actions must support historical version downloads");
-assert(actions.includes('user.role === "SYSTEM_ADMIN"') && actions.includes("user.id === document.owner_id"), "Only SYSTEM_ADMIN or owner should see version upload UI");
+assert(actions.includes("UPLOAD_VERSION") && actions.includes("document.effective_permissions"), "Version upload UI must use effective permissions");
 assert(documentsApi.includes("/versions/${versionId}/download"), "Version download API path must be implemented");
 assert(documentsApi.includes("URL.revokeObjectURL"), "Blob object URL must be revoked after downloads");
 assert(!/access_token|Authorization=.*[?&]/i.test(documentsApi), "Access Token must not be placed in a URL");

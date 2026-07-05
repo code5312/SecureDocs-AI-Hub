@@ -26,8 +26,9 @@ def test_version_number_uses_row_lock_and_max_query_not_len_versions() -> None:
 
 def test_version_permissions_and_duplicate_checksum_policy_exist() -> None:
     assert "def can_upload_version" in PERMISSIONS
-    assert "UserRole.SYSTEM_ADMIN" in PERMISSIONS
-    assert "document.owner_id == user.id" in PERMISSIONS
+    access = Path("app/documents/access.py").read_text()
+    assert "UserRole.SYSTEM_ADMIN" in access
+    assert "document.owner_id == user.id" in access
     assert "DOCUMENT_VERSION_DUPLICATE" in SERVICE
     assert "current_version.checksum_sha256 == result.checksum_sha256" in SERVICE
 

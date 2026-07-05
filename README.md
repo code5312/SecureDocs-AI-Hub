@@ -458,3 +458,136 @@ npm run build
 ```
 
 다음 단계는 문서별 ACL과 공유 정책입니다. 이번 버전 관리 작업은 과거 버전 삭제, 버전 복원, OCR, 임베딩, RAG, LLM 연동을 포함하지 않습니다.
+
+---
+
+## 🔐 Document ACL: 공유·권한 관리와 RAG 보안 경계
+
+> Document ACL은 단순한 화면 표시용 공유 기능이 아니라, 향후 pgvector 기반 RAG 검색에서 **사용자가 읽을 수 있는 문서만 검색 후보가 되도록 제한하는 핵심 보안 경계**다.
+
+### ✅ ACL 정책 요약
+
+| 항목 | 정책 |
+| --- | --- |
+| 모델 | allow-only ACL |
+| 적용 단위 | Document 단위 (버전별 ACL 아님) |
+| principal | 사용자(`USER`), 부서(`DEPARTMENT`) |
+| deny rule | MVP에서 미지원 |
+| Redis cache | 현재 미사용. 정확성과 단순한 무효화를 우선 |
+| 삭제 문서 | ACL row는 유지할 수 있지만 모든 permission check에서 접근 차단 |
+
+### 🧩 권한 종류와 의미
+
+| Permission | 허용 기능 | 비고 |
+| --- | --- | --- |
+| `VIEW_METADATA` | 목록 노출, 상세 메타데이터 조회, 버전 이력 조회 | 파일 다운로드는 불가 |
+| `READ_CONTENT` | 현재/과거 버전 다운로드, 향후 문서 chunk/RAG 검색 포함 | RAG 검색의 기준 권한 |
+| `UPLOAD_VERSION` | 기존 문서에 새 버전 업로드 | `VIEW_METADATA`를 암묵적으로 포함 |
+| `DELETE` | 문서 논리 삭제 | MinIO 객체는 즉시 삭제하지 않음 |
+| `MANAGE_ACL` | ACL 조회·추가·삭제 | owner와 SYSTEM_ADMIN은 항상 복구 가능 |
+
+권한 implication은 다음처럼 적용한다.
+
+```text
+MANAGE_ACL → VIEW_METADATA
+DELETE → VIEW_METADATA
+UPLOAD_VERSION → VIEW_METADATA
+READ_CONTENT → VIEW_METADATA
+```
+
+### 👑 암묵적 권한
+
+| 사용자 | 암묵 권한 |
+| --- | --- |
+| `SYSTEM_ADMIN` | 모든 문서에 전체 권한 |
+| 문서 owner | 자신이 소유한 문서에 전체 권한 |
+| `DOCUMENT_ADMIN` | 모든 활성 문서의 `VIEW_METADATA`만 허용 |
+| `DEPARTMENT_MANAGER` | 자기 부서 활성 문서의 `VIEW_METADATA`만 허용 |
+| 일반 `USER` | 소유 문서 또는 ACL로 허용된 문서만 접근 |
+
+owner 권한은 ACL row로 제거할 수 없다. 따라서 ACL 관리자가 실수로 자기 자신의 `MANAGE_ACL` entry를 삭제해도 owner와 SYSTEM_ADMIN은 계속 관리할 수 있다.
+
+### 🗄️ 데이터 모델과 무결성
+
+`document_acl_entries`는 사용자/부서 중 정확히 하나를 참조하는 nullable FK 구조를 사용한다.
+
+```text
+document_acl_entries
+├── document_id     FK documents.id ON DELETE CASCADE
+├── user_id         nullable FK users.id
+├── department_id   nullable FK departments.id
+├── permission      acl_permission enum
+├── granted_by      FK users.id
+└── created_at
+```
+
+DB 제약 조건:
+
+* `user_id`와 `department_id` 중 정확히 하나만 값이 있어야 한다.
+* 사용자 ACL 중복은 `(document_id, user_id, permission)` partial unique index로 차단한다.
+* 부서 ACL 중복은 `(document_id, department_id, permission)` partial unique index로 차단한다.
+* 문서 hard delete 시 ACL row는 cascade 삭제된다.
+
+### 🌐 ACL API
+
+| Method | Path | 필요 권한 | 설명 |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/documents/{document_id}/acl` | `MANAGE_ACL` | ACL entry 목록 조회 |
+| `POST` | `/api/v1/documents/{document_id}/acl` | `MANAGE_ACL` | 사용자/부서 권한 추가 |
+| `DELETE` | `/api/v1/documents/{document_id}/acl/{acl_entry_id}` | `MANAGE_ACL` | ACL entry 삭제 |
+| `GET` | `/api/v1/documents/{document_id}/acl/principals?query=...` | `MANAGE_ACL` | ACL 대상 사용자·부서 검색 |
+
+Principal 검색은 최소 2자 이상 검색어를 요구하고, 활성 사용자·활성 부서만 최대 20개씩 반환한다. 기존 관리자용 `/users`, `/departments` API 권한은 완화하지 않는다.
+
+### 🧠 SQL 수준 접근 필터와 future RAG
+
+문서 목록은 전체 문서를 조회한 뒤 Python에서 버리는 방식이 아니라, SQLAlchemy predicate로 pagination 전에 접근 범위를 제한한다.
+
+재사용 가능한 접근 범위는 다음 조건을 결합한다.
+
+* owner 문서
+* SYSTEM_ADMIN 전체 문서
+* DOCUMENT_ADMIN metadata 정책
+* DEPARTMENT_MANAGER 같은 부서 metadata 정책
+* direct user ACL
+* department ACL
+* 삭제 문서 제외
+
+향후 RAG 구현은 반드시 `READ_CONTENT` scope를 vector search SQL에 결합해야 한다.
+
+```text
+question embedding
+→ document_chunks vector search
+→ document_id IN (READ_CONTENT 접근 범위)
+→ 허용된 chunk만 LLM에 전달
+```
+
+ACL 없는 전체 pgvector index를 먼저 검색한 뒤 결과를 사후 필터링하는 방식은 금지한다.
+
+### 🖥️ Frontend 공유 UI
+
+문서 상세 화면은 backend가 계산한 `effective_permissions`를 받아 UI를 표시한다.
+
+| Permission | Frontend UI |
+| --- | --- |
+| `READ_CONTENT` | 현재/과거 버전 다운로드 버튼 |
+| `UPLOAD_VERSION` | 새 버전 업로드 폼 |
+| `DELETE` | 논리 삭제 버튼 |
+| `MANAGE_ACL` | `공유 및 권한` 관리 영역 |
+
+`effective_permissions`는 사용자 편의용 표시 값이며, 실제 보안 판단은 항상 backend API에서 다시 수행한다.
+
+### 🧾 감사 로그
+
+ACL 변경은 다음 action으로 기록한다.
+
+* `DOCUMENT_ACL_GRANT`
+* `DOCUMENT_ACL_REVOKE`
+
+감사 로그에는 `document_id`, `acl_entry_id`, `principal_type`, `principal_id`, `permissions`, `result` 같은 최소 정보만 기록한다. 비밀번호, 토큰, 문서 본문, storage key, MinIO endpoint, 전체 exception stack trace는 기록하지 않는다.
+
+### 🚧 현재 한계와 다음 단계
+
+* deny ACL, 공개 링크, 이메일 초대, 외부 사용자, 버전별 ACL은 아직 구현하지 않았다.
+* Redis ACL cache는 정확성과 무효화 단순성을 위해 아직 사용하지 않는다.
+* 다음 단계는 **텍스트 추출·청킹**이며, chunk 조회와 vector search는 반드시 `READ_CONTENT` ACL scope를 사용해야 한다.

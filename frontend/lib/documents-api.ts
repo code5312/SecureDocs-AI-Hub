@@ -1,5 +1,5 @@
 import { apiDownload, apiRequest, sanitizeDownloadedFilename } from "./api-client";
-import type { DocumentListParams, DocumentRecord, DocumentVersion } from "./documents";
+import type { DocumentAclEntry, DocumentAclPrincipalSearch, DocumentListParams, DocumentPermission, DocumentRecord, DocumentVersion } from "./documents";
 
 function queryString(params: DocumentListParams = {}): string {
   const query = new URLSearchParams();
@@ -45,6 +45,25 @@ export async function uploadDocumentVersion(documentId: string, file: File): Pro
   const form = new FormData();
   form.append("file", file);
   return apiRequest<DocumentRecord>(`/documents/${documentId}/versions`, { method: "POST", body: form });
+}
+
+export async function listDocumentAcl(documentId: string): Promise<DocumentAclEntry[]> {
+  return apiRequest<DocumentAclEntry[]>(`/documents/${documentId}/acl`);
+}
+
+export async function searchDocumentAclPrincipals(documentId: string, query: string): Promise<DocumentAclPrincipalSearch> {
+  return apiRequest<DocumentAclPrincipalSearch>(`/documents/${documentId}/acl/principals?query=${encodeURIComponent(query)}`);
+}
+
+export async function grantDocumentAcl(input: { documentId: string; principalType: "USER" | "DEPARTMENT"; principalId: string; permissions: DocumentPermission[] }): Promise<DocumentAclEntry[]> {
+  return apiRequest<DocumentAclEntry[]>(`/documents/${input.documentId}/acl`, {
+    method: "POST",
+    body: JSON.stringify({ principal_type: input.principalType, principal_id: input.principalId, permissions: input.permissions }),
+  });
+}
+
+export async function revokeDocumentAcl(documentId: string, aclEntryId: string): Promise<void> {
+  await apiRequest<void>(`/documents/${documentId}/acl/${aclEntryId}`, { method: "DELETE" });
 }
 
 async function saveBlob(path: string, fallbackFilename?: string): Promise<void> {
