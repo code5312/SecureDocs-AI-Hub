@@ -39,6 +39,10 @@ def test_compose_targets_keep_runtime_and_tests_separate() -> None:
     assert "worker:\n    profiles: [\"worker\"]\n    build:\n      context: .\n      dockerfile: backend/Dockerfile\n      target: runtime" in compose
     backend_section = compose.split("  backend:", 1)[1].split("  backend-test:", 1)[0]
     assert "pytest" not in backend_section
+    backend_test_section = compose.split("  backend-test:", 1)[1].split("  worker:", 1)[0]
+    assert "source: ./.dockerignore" in backend_test_section
+    assert "target: /workspace/.dockerignore" in backend_test_section
+    assert "read_only: true" in backend_test_section
 
 
 def test_verify_script_checks_backend_command_and_test_profile() -> None:

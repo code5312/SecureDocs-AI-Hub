@@ -146,7 +146,7 @@ docker compose --profile worker run --rm worker
 
 ## Docker 실행·테스트 명령 구분
 
-애플리케이션 runtime 컨테이너와 테스트 one-shot 컨테이너는 서로 다른 Docker build target을 사용합니다. backend 계열 서비스의 Docker build context는 repository root(`.`)이고 Dockerfile은 `backend/Dockerfile`을 명시합니다. runtime image는 backend 실행에 필요한 `backend/app`, Alembic 파일, requirements만 포함하고, test image는 static test가 repository root 파일을 읽을 수 있도록 `docker-compose.yml`, `scripts/`, `nginx/`, `backend/Dockerfile`, `backend/tests`를 추가로 포함합니다.
+애플리케이션 runtime 컨테이너와 테스트 one-shot 컨테이너는 서로 다른 Docker build target을 사용합니다. backend 계열 서비스의 Docker build context는 repository root(`.`)이고 Dockerfile은 `backend/Dockerfile`을 명시합니다. runtime image는 backend 실행에 필요한 `backend/app`, Alembic 파일, requirements만 포함하고, test image는 static test가 repository root 파일을 읽을 수 있도록 `docker-compose.yml`, `scripts/`, `nginx/`, `backend/Dockerfile`, `backend/tests`를 추가로 포함합니다. `.dockerignore`는 Docker build context 처리용 특수 파일이므로 Dockerfile로 복사하지 않고, `backend-test` service에서 `/workspace/.dockerignore`로 read-only bind mount합니다.
 
 | Service | Build target | 기본 실행 여부 | 역할 |
 | --- | --- | --- | --- |
@@ -531,7 +531,7 @@ curl -L -H "Authorization: Bearer $ACCESS_TOKEN" \
 
 ## Backend test service
 
-운영용 backend image에는 테스트 파일을 포함하지 않아도 되도록 `backend/Dockerfile`에 `test` stage를 추가하고 `docker-compose.yml`에 `backend-test` service를 분리했습니다. Docker 환경에서는 다음 명령으로 테스트가 0건 수집되지 않는지 확인합니다. pytest cache 위치는 `backend/pytest.ini`의 `cache_dir = /tmp/securedocs-pytest-cache`로 관리하며, Dockerfile에서 잘못된 `--cache-dir` CLI option을 전달하지 않습니다.
+운영용 backend image에는 테스트 파일을 포함하지 않아도 되도록 `backend/Dockerfile`에 `test` stage를 추가하고 `docker-compose.yml`에 `backend-test` service를 분리했습니다. Docker 환경에서는 다음 명령으로 테스트가 0건 수집되지 않는지 확인합니다. repository static validation을 위해 `backend-test`는 root `.dockerignore`를 `/workspace/.dockerignore`에 read-only로 bind mount합니다. pytest cache 위치는 `backend/pytest.ini`의 `cache_dir = /tmp/securedocs-pytest-cache`로 관리하며, Dockerfile에서 잘못된 `--cache-dir` CLI option을 전달하지 않습니다.
 
 ```bash
 docker compose --profile test run --rm backend-test python -m pytest -v
