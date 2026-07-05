@@ -32,7 +32,8 @@ services:
 
   backend:
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
       target: runtime
     env_file: .env
     environment:
@@ -57,7 +58,8 @@ services:
   backend-test:
     profiles: ["test"]
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
       target: test
     env_file: .env
     environment:
@@ -78,7 +80,8 @@ services:
   worker:
     profiles: ["worker"]
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
       target: runtime
     env_file: .env
     command: ["python", "-m", "app.worker"]

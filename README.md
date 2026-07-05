@@ -146,7 +146,7 @@ docker compose --profile worker run --rm worker
 
 ## Docker 실행·테스트 명령 구분
 
-애플리케이션 runtime 컨테이너와 테스트 one-shot 컨테이너는 서로 다른 Docker build target을 사용합니다.
+애플리케이션 runtime 컨테이너와 테스트 one-shot 컨테이너는 서로 다른 Docker build target을 사용합니다. backend 계열 서비스의 Docker build context는 repository root(`.`)이고 Dockerfile은 `backend/Dockerfile`을 명시합니다. runtime image는 backend 실행에 필요한 `backend/app`, Alembic 파일, requirements만 포함하고, test image는 static test가 repository root 파일을 읽을 수 있도록 `docker-compose.yml`, `scripts/`, `nginx/`, `backend/Dockerfile`, `backend/tests`를 추가로 포함합니다.
 
 | Service | Build target | 기본 실행 여부 | 역할 |
 | --- | --- | --- | --- |
@@ -203,7 +203,7 @@ frontend     healthy
 nginx        healthy
 ```
 
-전체 반복 검증은 compose build target, backend import, backend 실제 command, 단계별 health 상태를 확인합니다.
+전체 반복 검증은 compose build target, backend import, backend 실제 command, 단계별 health 상태를 확인합니다. `backend-test`와 `worker`는 profile service이므로 config 검사는 `docker compose --profile test --profile worker config` 기준으로 수행합니다.
 
 ```bash
 ./scripts/verify.sh
@@ -541,6 +541,7 @@ docker compose --profile test run --rm backend-test python -m pytest -v
 
 ```bash
 docker compose down
+docker compose --profile test --profile worker config
 docker compose build --no-cache backend
 docker compose --profile test build --no-cache backend-test
 docker compose build --no-cache frontend

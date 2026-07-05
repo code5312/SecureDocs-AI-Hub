@@ -58,8 +58,8 @@ wait_for_healthy() {
 }
 
 echo "Validating Docker Compose configuration..."
-docker compose config
-docker compose config --format json | python -c '
+docker compose --profile test --profile worker config
+docker compose --profile test --profile worker config --format json | python -c '
 import json
 import sys
 

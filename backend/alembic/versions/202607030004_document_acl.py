@@ -13,7 +13,7 @@ down_revision = "202607030003"
 branch_labels = None
 depends_on = None
 
-acl_permission = postgresql.ENUM("VIEW_METADATA", "READ_CONTENT", "UPLOAD_VERSION", "DELETE", "MANAGE_ACL", name="acl_permission", create_type=False,)
+acl_permission = postgresql.ENUM("VIEW_METADATA", "READ_CONTENT", "UPLOAD_VERSION", "DELETE", "MANAGE_ACL", name="acl_permission")
 
 
 def upgrade() -> None:

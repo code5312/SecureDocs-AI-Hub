@@ -1,6 +1,8 @@
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+from tests.repository_paths import find_repository_root
+
+ROOT = find_repository_root(Path(__file__))
 
 
 def read(path: str) -> str:
