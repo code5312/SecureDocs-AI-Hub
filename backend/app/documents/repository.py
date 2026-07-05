@@ -53,7 +53,7 @@ class DocumentRepository:
             stmt = stmt.where(or_(DocumentAclEntry.user_id == user.id, active_department_acl))
         return set(self.db.scalars(stmt))
 
-    def list(self, *, offset: int, limit: int, access_predicate: ColumnElement[bool], title: str | None = None, owner_id: uuid.UUID | None = None, department_id: uuid.UUID | None = None, status: DocumentStatus | None = None) -> list[Document]:
+    def list_documents(self, *, offset: int, limit: int, access_predicate: ColumnElement[bool], title: str | None = None, owner_id: uuid.UUID | None = None, department_id: uuid.UUID | None = None, status: DocumentStatus | None = None) -> list[Document]:
         stmt = select(Document).options(selectinload(Document.versions)).where(access_predicate).order_by(Document.created_at.desc()).offset(offset).limit(limit)
         if title:
             stmt = stmt.where(Document.title.ilike(f"%{title.strip()}%"))

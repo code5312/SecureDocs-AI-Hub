@@ -34,6 +34,29 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
+wait_for_healthy() {
+  local service="$1"
+  local log_lines="${2:-200}"
+  echo "Waiting for $service to become healthy..."
+  for _ in {1..40}; do
+    local container_id
+    container_id="$(docker compose ps -q "$service")"
+    if [[ -n "$container_id" ]]; then
+      local status
+      status="$(docker inspect "$container_id" --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}')"
+      if [[ "$status" == "healthy" || "$status" == "running" ]]; then
+        echo "$service status: $status"
+        return 0
+      fi
+    fi
+    sleep 2
+  done
+  echo "ERROR: $service did not become healthy." >&2
+  docker compose ps -a >&2
+  docker compose logs --tail="$log_lines" "$service" >&2
+  exit 1
+}
+
 echo "Validating Docker Compose configuration..."
 docker compose config
 docker compose config --format json | python -c '
@@ -54,49 +77,52 @@ if isinstance(backend_test_command, str):
 assert "pytest" in " ".join(backend_test_command), "backend-test must run pytest"
 '
 
-docker compose build
+docker compose build backend
 docker compose --profile test build backend-test
-docker compose up -d
+docker compose build frontend
 
-echo "Waiting for health endpoint..."
-for _ in {1..30}; do
-  if curl -fsS http://localhost/api/v1/health >/tmp/securedocs-health.json; then
-    cat /tmp/securedocs-health.json
-    break
-  fi
-  sleep 2
-done
+# Import smoke test runs before starting the full app stack so Python import failures are reported first.
+docker compose run --rm --no-deps backend python -c "from app.main import app; print('backend-import-ok')"
 
+docker compose up -d postgres redis minio
+wait_for_healthy postgres 100
+wait_for_healthy redis 100
+wait_for_healthy minio 100
+docker compose run --rm minio-init
+
+docker compose run --rm backend alembic upgrade head
+docker compose run --rm backend alembic current
+docker compose run --rm backend alembic heads
+
+docker compose up -d backend
+wait_for_healthy backend 300
 backend_id="$(docker compose ps -q backend)"
-if [[ -z "$backend_id" ]]; then
-  echo "ERROR: backend container is not running." >&2
-  docker compose ps -a >&2
-  exit 1
-fi
 backend_cmd="$(docker inspect "$backend_id" --format '{{json .Config.Cmd}}')"
 echo "backend command: $backend_cmd"
 if [[ "$backend_cmd" != *"uvicorn"* ]]; then
   echo "ERROR: backend is not using the runtime uvicorn command: $backend_cmd" >&2
-  docker compose logs --tail=100 backend >&2
+  docker compose logs --tail=300 backend >&2
   exit 1
 fi
 if [[ "$backend_cmd" == *"pytest"* ]]; then
   echo "ERROR: backend is incorrectly using the test command: $backend_cmd" >&2
-  docker compose logs --tail=100 backend >&2
+  docker compose logs --tail=300 backend >&2
   exit 1
 fi
-
-docker compose ps -a
-docker compose logs --tail=100 backend
 
 curl -fsS http://localhost/api/v1/health >/dev/null
 curl -fsSI http://localhost/docs >/dev/null
 curl -fsS http://localhost/openapi.json >/dev/null
+
+docker compose up -d frontend
+wait_for_healthy frontend 200
 curl -fsSI http://localhost/ >/dev/null
 
+docker compose up -d nginx
+wait_for_healthy nginx 200
+docker compose exec -T nginx nginx -t
+
 docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "SELECT extname FROM pg_extension WHERE extname = 'vector';"
-docker compose exec -T backend alembic upgrade head
-docker compose run --rm minio-init
 docker compose --profile test run --rm backend-test python -m pytest -v
 cd frontend
 npm ci

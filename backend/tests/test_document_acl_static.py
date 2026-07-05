@@ -38,6 +38,8 @@ def test_acl_permission_scope_is_sql_level_and_rag_reusable() -> None:
     assert "DocumentAclEntry.user_id == user.id" in access
     assert "DocumentAclEntry.department_id == user.department_id" in access
     assert "accepted = implied_permissions(permission)" in access
+    assert "def list_documents" in repository
+    assert "def list(self" not in repository
     assert "access_predicate" in repository
     assert ".where(access_predicate)" in repository
     assert "build_document_access_predicate(actor, AclPermission.VIEW_METADATA)" in service

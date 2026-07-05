@@ -113,7 +113,7 @@ class DocumentService:
 
     def list_documents(self, actor: User, *, offset: int, limit: int, title: str | None, owner_id: uuid.UUID | None, department_id: uuid.UUID | None, status: DocumentStatus | None) -> list[Document]:
         access_predicate = build_document_access_predicate(actor, AclPermission.VIEW_METADATA)
-        return self.documents.list(offset=offset, limit=limit, access_predicate=access_predicate, title=title, owner_id=owner_id, department_id=department_id, status=status)
+        return self.documents.list_documents(offset=offset, limit=limit, access_predicate=access_predicate, title=title, owner_id=owner_id, department_id=department_id, status=status)
 
     def get_document(self, actor: User, document_id: uuid.UUID) -> Document:
         document = self.documents.get(document_id)

@@ -14,8 +14,8 @@ COPY --chown=app:app alembic ./alembic
 FROM base AS test
 USER root
 COPY --chown=app:app tests ./tests
+COPY --chown=app:app pytest.ini ./pytest.ini
 USER app
-ENV PYTEST_ADDOPTS="--cache-dir=/tmp/securedocs-pytest-cache"
 CMD ["python", "-m", "pytest", "-v"]
 
 FROM base AS runtime

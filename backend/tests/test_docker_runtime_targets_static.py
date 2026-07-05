@@ -12,7 +12,11 @@ def test_backend_dockerfile_has_safe_runtime_final_stage_and_test_stage() -> Non
     assert "FROM base AS test" in dockerfile
     assert "FROM base AS runtime" in dockerfile
     assert dockerfile.rfind("FROM base AS runtime") > dockerfile.rfind("FROM base AS test")
-    assert 'ENV PYTEST_ADDOPTS="--cache-dir=/tmp/securedocs-pytest-cache"' in dockerfile
+    assert "PYTEST_ADDOPTS" not in dockerfile
+    assert "--cache-dir" not in dockerfile
+    assert "COPY --chown=app:app pytest.ini ./pytest.ini" in dockerfile
+    pytest_ini = read("backend/pytest.ini")
+    assert "cache_dir = /tmp/securedocs-pytest-cache" in pytest_ini
     assert 'CMD ["python", "-m", "pytest", "-v"]' in dockerfile
     assert 'CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]' in dockerfile
 
@@ -35,4 +39,11 @@ def test_verify_script_checks_backend_command_and_test_profile() -> None:
     assert "docker inspect \"$backend_id\"" in verify
     assert '"$backend_cmd" != *"uvicorn"*' in verify
     assert '"$backend_cmd" == *"pytest"*' in verify
+    assert "docker compose run --rm --no-deps backend python -c" in verify
+    assert "docker compose up -d postgres redis minio" in verify
+    assert "docker compose run --rm backend alembic upgrade head" in verify
+    assert "docker compose up -d backend" in verify
+    assert "docker compose up -d frontend" in verify
+    assert "docker compose up -d nginx" in verify
+    assert "docker compose exec -T nginx nginx -t" in verify
     assert "docker compose --profile test run --rm backend-test python -m pytest -v" in verify

@@ -78,7 +78,9 @@ docker compose down -v
 
 ```bash
 docker compose down
-docker compose build --no-cache backend backend-test frontend
+docker compose build --no-cache backend
+docker compose --profile test build --no-cache backend-test
+docker compose build --no-cache frontend
 docker compose up -d
 ```
 
@@ -162,10 +164,23 @@ docker compose up -d
 docker compose ps
 ```
 
-마이그레이션:
+Backend import smoke test:
 
 ```bash
-docker compose exec backend alembic upgrade head
+docker compose run --rm --no-deps backend python -c "from app.main import app; print('backend-import-ok')"
+```
+
+backend가 아직 실행되기 전 마이그레이션은 one-shot container로 실행합니다.
+
+```bash
+docker compose run --rm backend alembic upgrade head
+docker compose run --rm backend alembic current
+docker compose run --rm backend alembic heads
+```
+
+backend가 healthy 상태가 된 뒤에는 current/head 확인에 `exec`도 사용할 수 있습니다.
+
+```bash
 docker compose exec backend alembic current
 docker compose exec backend alembic heads
 ```
@@ -188,11 +203,29 @@ frontend     healthy
 nginx        healthy
 ```
 
-전체 반복 검증은 compose build target과 backend 실제 command까지 확인합니다.
+전체 반복 검증은 compose build target, backend import, backend 실제 command, 단계별 health 상태를 확인합니다.
 
 ```bash
 ./scripts/verify.sh
 ```
+
+### 단계별 Docker 검증 흐름
+
+Nginx upstream 오류는 backend import 실패로 frontend가 시작되지 않았을 때 발생하는 2차 오류일 수 있습니다. 따라서 검증은 다음 순서로 진행합니다.
+
+```text
+backend import smoke test
+→ postgres/redis/minio 시작
+→ minio-init
+→ alembic one-shot migration
+→ backend healthy
+→ frontend healthy
+→ nginx 실행 및 nginx -t
+→ backend-test pytest
+```
+
+`./scripts/verify.sh`는 위 순서로 실행되며, backend import 실패나 backend unhealthy 상태에서는 frontend/nginx 단계로 넘어가지 않고 관련 로그를 먼저 출력합니다.
+
 
 ## 로컬 테스트와 정적 검사
 
@@ -252,10 +285,17 @@ cd backend
 alembic upgrade head
 ```
 
-Docker 환경에서는 다음과 같이 실행합니다.
+Docker 환경에서 backend가 아직 실행되기 전에는 one-shot container로 실행합니다.
 
 ```bash
-docker compose exec backend alembic upgrade head
+docker compose run --rm backend alembic upgrade head
+```
+
+backend가 healthy 상태라면 current/head 확인에 exec를 사용할 수 있습니다.
+
+```bash
+docker compose exec backend alembic current
+docker compose exec backend alembic heads
 ```
 
 ### 초기 SYSTEM_ADMIN 생성
@@ -491,7 +531,7 @@ curl -L -H "Authorization: Bearer $ACCESS_TOKEN" \
 
 ## Backend test service
 
-운영용 backend image에는 테스트 파일을 포함하지 않아도 되도록 `backend/Dockerfile`에 `test` stage를 추가하고 `docker-compose.yml`에 `backend-test` service를 분리했습니다. Docker 환경에서는 다음 명령으로 테스트가 0건 수집되지 않는지 확인합니다.
+운영용 backend image에는 테스트 파일을 포함하지 않아도 되도록 `backend/Dockerfile`에 `test` stage를 추가하고 `docker-compose.yml`에 `backend-test` service를 분리했습니다. Docker 환경에서는 다음 명령으로 테스트가 0건 수집되지 않는지 확인합니다. pytest cache 위치는 `backend/pytest.ini`의 `cache_dir = /tmp/securedocs-pytest-cache`로 관리하며, Dockerfile에서 잘못된 `--cache-dir` CLI option을 전달하지 않습니다.
 
 ```bash
 docker compose --profile test run --rm backend-test python -m pytest -v
@@ -501,9 +541,14 @@ docker compose --profile test run --rm backend-test python -m pytest -v
 
 ```bash
 docker compose down
-docker compose build --no-cache
-docker compose up -d
-docker compose exec backend alembic upgrade head
+docker compose build --no-cache backend
+docker compose --profile test build --no-cache backend-test
+docker compose build --no-cache frontend
+docker compose run --rm --no-deps backend python -c "from app.main import app; print('backend-import-ok')"
+docker compose up -d postgres redis minio
+docker compose run --rm minio-init
+docker compose run --rm backend alembic upgrade head
+docker compose up -d backend frontend nginx
 docker compose --profile test run --rm backend-test python -m pytest -v
 cd frontend
 npm ci
