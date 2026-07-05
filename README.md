@@ -46,7 +46,9 @@ cp .env.example .env
 ## 최초 실행
 
 ```bash
-docker compose up --build
+docker compose build
+docker compose up -d
+docker compose ps
 ```
 
 접속 URL:
@@ -63,13 +65,22 @@ docker compose up --build
 docker compose down
 ```
 
-## 볼륨까지 삭제하는 초기화
+## 데이터 볼륨 보존
+
+검증과 일반 재시작에서는 PostgreSQL, Redis, MinIO 볼륨을 보존합니다. 다음 명령은 기존 문서와 DB 데이터를 삭제할 수 있으므로 일반 검증 절차에서 사용하지 않습니다.
 
 ```bash
+# 주의: 데이터 삭제 목적이 명확할 때만 사용
 docker compose down -v
 ```
 
-다시 실행하면 PostgreSQL의 `vector` 확장과 MinIO 버킷이 재생성됩니다.
+일반적인 재빌드와 재시작은 다음 범위로 제한합니다.
+
+```bash
+docker compose down
+docker compose build --no-cache backend backend-test frontend
+docker compose up -d
+```
 
 ## 서비스별 로그 확인
 
@@ -131,6 +142,58 @@ Celery 앱과 백그라운드 작업은 아직 구현 범위가 아닙니다. `w
 docker compose --profile worker run --rm worker
 ```
 
+## Docker 실행·테스트 명령 구분
+
+애플리케이션 runtime 컨테이너와 테스트 one-shot 컨테이너는 서로 다른 Docker build target을 사용합니다.
+
+| Service | Build target | 기본 실행 여부 | 역할 |
+| --- | --- | --- | --- |
+| `backend` | `runtime` | `docker compose up -d`에서 실행 | `uvicorn app.main:app --host 0.0.0.0 --port 8000` |
+| `backend-test` | `test` | `test` profile에서만 실행 | `python -m pytest -v` |
+| `worker` | `runtime` | `worker` profile에서만 실행 | 백그라운드 worker 진입점 검증 |
+
+정상 상태의 backend command는 `uvicorn`이어야 하며, `python -m pytest -v`가 backend runtime service에 적용되면 잘못된 구성입니다. `minio-init`가 `Exited (0)`으로 보이는 것은 버킷 초기화가 완료된 정상 상태입니다.
+
+애플리케이션 실행:
+
+```bash
+docker compose build
+docker compose up -d
+docker compose ps
+```
+
+마이그레이션:
+
+```bash
+docker compose exec backend alembic upgrade head
+docker compose exec backend alembic current
+docker compose exec backend alembic heads
+```
+
+backend 테스트는 production backend 컨테이너가 아니라 `backend-test` service로 실행합니다. runtime image에는 tests가 없을 수 있으므로 `docker compose exec backend python -m pytest`는 권장하지 않습니다.
+
+```bash
+docker compose --profile test run --rm backend-test python -m pytest -v
+```
+
+정상 서비스 상태 예시:
+
+```text
+postgres     healthy
+redis        healthy
+minio        healthy
+minio-init   Exited (0)
+backend      healthy
+frontend     healthy
+nginx        healthy
+```
+
+전체 반복 검증은 compose build target과 backend 실제 command까지 확인합니다.
+
+```bash
+./scripts/verify.sh
+```
+
 ## 로컬 테스트와 정적 검사
 
 백엔드 테스트:
@@ -148,12 +211,6 @@ npm ci
 npm run type-check
 npm run lint
 npm run build
-```
-
-전체 반복 검증:
-
-```bash
-./scripts/verify.sh
 ```
 
 ## Docker를 실행할 수 없을 때 가능한 정적 검사
@@ -422,7 +479,7 @@ curl -L -H "Authorization: Bearer $ACCESS_TOKEN" \
 
 ### 버전 업로드 권한
 
-문서 ACL이 구현되기 전까지 새 버전 업로드는 `SYSTEM_ADMIN` 또는 문서 owner에게만 허용합니다. `DOCUMENT_ADMIN`, `DEPARTMENT_MANAGER`, `USER`도 문서 owner인 경우에는 새 버전을 업로드할 수 있지만, 다른 사용자의 문서에는 버전을 추가할 수 없습니다. 프론트엔드는 owner 또는 `SYSTEM_ADMIN`에게만 업로드 UI를 표시하지만, 최종 권한 검사는 백엔드가 수행합니다.
+새 버전 업로드는 `UPLOAD_VERSION` effective permission을 요구합니다. `SYSTEM_ADMIN`과 문서 owner는 암묵적으로 권한을 가지며, 다른 사용자나 부서는 ACL grant를 통해 권한을 받을 수 있습니다. 프론트엔드는 `effective_permissions`로 업로드 UI를 표시하지만, 최종 권한 검사는 백엔드가 수행합니다.
 
 ### 버전 감사 로그
 
@@ -430,14 +487,14 @@ curl -L -H "Authorization: Bearer $ACCESS_TOKEN" \
 
 ### 프론트엔드 버전 이력
 
-문서 상세 화면은 실제 문서 API와 버전 목록 API를 호출해 현재 버전과 버전 이력을 표시합니다. 각 버전 행에서 과거 버전을 Blob 다운로드로 받을 수 있고, owner 또는 `SYSTEM_ADMIN`은 새 버전 업로드 폼을 사용할 수 있습니다. Access Token은 query parameter에 넣지 않고 기존 인증 API client의 `Authorization` 헤더와 refresh 재시도 정책을 사용합니다.
+문서 상세 화면은 실제 문서 API와 버전 목록 API를 호출해 현재 버전과 버전 이력을 표시합니다. 각 버전 행에서 과거 버전을 Blob 다운로드로 받을 수 있고, `UPLOAD_VERSION` 권한이 있는 사용자는 새 버전 업로드 폼을 사용할 수 있습니다. Access Token은 query parameter에 넣지 않고 기존 인증 API client의 `Authorization` 헤더와 refresh 재시도 정책을 사용합니다.
 
 ## Backend test service
 
 운영용 backend image에는 테스트 파일을 포함하지 않아도 되도록 `backend/Dockerfile`에 `test` stage를 추가하고 `docker-compose.yml`에 `backend-test` service를 분리했습니다. Docker 환경에서는 다음 명령으로 테스트가 0건 수집되지 않는지 확인합니다.
 
 ```bash
-docker compose run --rm backend-test python -m pytest -v
+docker compose --profile test run --rm backend-test python -m pytest -v
 ```
 
 전체 검증 시 권장 흐름은 다음과 같습니다.
@@ -447,7 +504,7 @@ docker compose down
 docker compose build --no-cache
 docker compose up -d
 docker compose exec backend alembic upgrade head
-docker compose run --rm backend-test python -m pytest -v
+docker compose --profile test run --rm backend-test python -m pytest -v
 cd frontend
 npm ci
 npm run test:auth

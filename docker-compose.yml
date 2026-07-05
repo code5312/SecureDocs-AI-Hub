@@ -31,7 +31,9 @@ services:
       retries: 5
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      target: runtime
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -75,7 +77,9 @@ services:
 
   worker:
     profiles: ["worker"]
-    build: ./backend
+    build:
+      context: ./backend
+      target: runtime
     env_file: .env
     command: ["python", "-m", "app.worker"]
     depends_on:
