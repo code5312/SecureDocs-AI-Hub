@@ -41,6 +41,10 @@ export async function listDocumentVersions(documentId: string): Promise<Document
   return apiRequest<DocumentVersion[]>(`/documents/${documentId}/versions`);
 }
 
+export async function retryDocumentVersionExtraction(documentId: string, versionId: string): Promise<DocumentVersion> {
+  return apiRequest<DocumentVersion>(`/documents/${documentId}/versions/${versionId}/extraction/retry`, { method: "POST" });
+}
+
 export async function uploadDocumentVersion(documentId: string, file: File): Promise<DocumentRecord> {
   const form = new FormData();
   form.append("file", file);

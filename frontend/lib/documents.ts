@@ -1,4 +1,5 @@
 export type DocumentStatus = "ACTIVE" | "PROCESSING" | "FAILED";
+export type ExtractionStatus = "PENDING" | "PROCESSING" | "SUCCEEDED" | "FAILED";
 
 export type DocumentPermission = "VIEW_METADATA" | "READ_CONTENT" | "UPLOAD_VERSION" | "DELETE" | "MANAGE_ACL";
 
@@ -12,6 +13,12 @@ export type DocumentVersion = {
   checksum_sha256: string;
   uploaded_by: string;
   created_at: string;
+  extraction_status: ExtractionStatus;
+  extraction_error_code: string | null;
+  extraction_error_message: string | null;
+  extraction_attempts: number;
+  extracted_at: string | null;
+  chunk_count: number;
   is_current: boolean;
 };
 
@@ -77,3 +84,5 @@ export function formatFileSize(size: number): string {
 export function shortChecksum(checksum: string): string {
   return checksum.length > 16 ? `${checksum.slice(0, 16)}…` : checksum;
 }
+
+export const extractionStatusLabels: Record<ExtractionStatus, string> = { PENDING: "추출 대기", PROCESSING: "처리 중", SUCCEEDED: "추출 완료", FAILED: "추출 실패" };

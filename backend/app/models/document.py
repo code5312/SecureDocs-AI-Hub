@@ -1,12 +1,12 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
-from app.models.enums import DocumentStatus
+from app.models.enums import DocumentStatus, ExtractionStatus
 
 
 class Document(Base):
@@ -42,5 +42,12 @@ class DocumentVersion(Base):
     checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     uploaded_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    extraction_status: Mapped[ExtractionStatus] = mapped_column(Enum(ExtractionStatus, name="extraction_status"), default=ExtractionStatus.PENDING, nullable=False, index=True)
+    extraction_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    extraction_error_message: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    extraction_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    extraction_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    extracted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     document = relationship("Document", back_populates="versions", foreign_keys=[document_id])
