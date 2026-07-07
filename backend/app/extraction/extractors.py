@@ -90,6 +90,8 @@ def _extract_docx(file_obj: BinaryIO, settings: Settings) -> list[ExtractedSegme
                 _check_chars(total, settings)
                 segments.append(ExtractedSegment(text=text, section_title=current_heading))
         return segments
+    except ExtractionError:
+        raise
     except Exception as exc:
         raise ExtractionError(ExtractionErrorCode.PARSER_ERROR) from exc
 

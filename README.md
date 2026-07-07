@@ -138,10 +138,12 @@ docker compose run --rm minio-init
 
 ## worker 현재 상태와 역할
 
-Celery 앱과 백그라운드 작업은 아직 구현 범위가 아닙니다. `worker` 서비스는 `worker` profile에 넣어 기본 `docker compose up`에서는 시작하지 않도록 명확히 비활성화했습니다. 실행 가능성 검증을 위해 `python -m app.worker` 진입점은 존재하지만, 현재는 기반 단계 안내 메시지를 출력하고 종료합니다.
+Celery worker는 문서 버전별 텍스트 추출과 청킹 작업을 처리합니다. `worker` 서비스는 `worker` profile에 있어 기본 `docker compose up`에서는 시작하지 않으며, Redis broker와 PostgreSQL/MinIO가 준비된 뒤 별도로 실행합니다.
 
 ```bash
-docker compose --profile worker run --rm worker
+docker compose --profile worker up -d worker
+docker compose --profile worker run --rm --no-deps worker \
+  python -c "from app.worker import celery_app; print('worker-import-ok', celery_app.main)"
 ```
 
 ## Docker 실행·테스트 명령 구분
@@ -754,3 +756,9 @@ POST /api/v1/documents/{document_id}/versions/{version_id}/extraction/retry
 - 로그와 AuditLog에는 문서 원문, 전체 추출 텍스트, storage key, credential, token, 내부 stack trace를 기록하지 않습니다.
 - Queue 장애 시 업로드된 원본과 DB 버전은 유지하고 버전 추출 상태만 `FAILED` 및 `QUEUE_UNAVAILABLE`로 기록하므로 사용자가 재시도할 수 있습니다.
 - PostgreSQL `audit_action` enum에 추가된 추출 audit 값은 PostgreSQL 특성상 downgrade에서 안전하게 제거하지 않습니다. Migration downgrade는 데이터 파괴적인 enum 재생성을 수행하지 않습니다.
+
+## 로컬 검증 문서
+
+- Phase A 문서 추출 검증: `docs/LOCAL_VALIDATION_PHASE_A.md`
+- Phase A 자동 검증 스크립트: `./scripts/verify_phase_a.sh`
+- TXT 업로드 extraction smoke test: `python scripts/extraction_smoke_test.py`
