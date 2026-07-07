@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import BinaryIO, Iterator
 
+from fastapi import HTTPException
 from minio.error import S3Error
 
 from app.config.settings import get_settings
@@ -91,7 +92,15 @@ class DocumentStorage:
         """Return a bounded seekable temp stream for a DB-owned storage key."""
         import tempfile
 
-        stat = self.stat_object(storage_key)
+        try:
+            stat = self.stat_object(storage_key)
+        except HTTPException as exc:
+            from app.extraction.errors import ExtractionError, ExtractionErrorCode
+
+            status_code = getattr(exc, "status_code", None)
+            if status_code == 404:
+                raise ExtractionError(ExtractionErrorCode.OBJECT_NOT_FOUND) from exc
+            raise ExtractionError(ExtractionErrorCode.STORAGE_UNAVAILABLE) from exc
         if stat.size > max_size_bytes:
             from app.extraction.errors import ExtractionError, ExtractionErrorCode
             raise ExtractionError(ExtractionErrorCode.OBJECT_TOO_LARGE)
