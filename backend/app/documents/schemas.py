@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.models.enums import AclPermission, DocumentStatus
+from app.models.enums import AclPermission, DocumentStatus, ExtractionStatus
 
 
 class DocumentVersionRead(BaseModel):
@@ -18,6 +18,12 @@ class DocumentVersionRead(BaseModel):
     checksum_sha256: str
     uploaded_by: uuid.UUID
     created_at: datetime
+    extraction_status: ExtractionStatus
+    extraction_error_code: str | None = None
+    extraction_error_message: str | None = None
+    extraction_attempts: int
+    extracted_at: datetime | None = None
+    chunk_count: int
     is_current: bool = False
 
 

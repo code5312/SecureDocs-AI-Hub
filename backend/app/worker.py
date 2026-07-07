@@ -1,11 +1,22 @@
+from celery import Celery
+
 from app.config.settings import get_settings
+from app.extraction.tasks import register_tasks
 
+settings = get_settings()
 
-def main() -> None:
-    """Validate worker importability until a Celery app is introduced in a later task."""
-    settings = get_settings()
-    print(f"{settings.app_name} worker is disabled for the foundation stage.", flush=True)
+celery_app = Celery("securedocs", broker=settings.celery_broker_url)
+celery_app.conf.update(
+    task_ignore_result=True,
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
+    worker_prefetch_multiplier=1,
+    task_serializer="json",
+    accept_content=["json"],
+    timezone="UTC",
+)
 
+extract_document_version = register_tasks(celery_app)
 
 if __name__ == "__main__":
-    main()
+    print(celery_app.main)

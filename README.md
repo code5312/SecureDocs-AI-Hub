@@ -138,10 +138,12 @@ docker compose run --rm minio-init
 
 ## worker 현재 상태와 역할
 
-Celery 앱과 백그라운드 작업은 아직 구현 범위가 아닙니다. `worker` 서비스는 `worker` profile에 넣어 기본 `docker compose up`에서는 시작하지 않도록 명확히 비활성화했습니다. 실행 가능성 검증을 위해 `python -m app.worker` 진입점은 존재하지만, 현재는 기반 단계 안내 메시지를 출력하고 종료합니다.
+Celery worker는 문서 버전별 텍스트 추출과 청킹 작업을 처리합니다. `worker` 서비스는 `worker` profile에 있어 기본 `docker compose up`에서는 시작하지 않으며, Redis broker와 PostgreSQL/MinIO가 준비된 뒤 별도로 실행합니다.
 
 ```bash
-docker compose --profile worker run --rm worker
+docker compose --profile worker up -d worker
+docker compose --profile worker run --rm --no-deps worker \
+  python -c "from app.worker import celery_app; print('worker-import-ok', celery_app.main)"
 ```
 
 ## Docker 실행·테스트 명령 구분
@@ -694,3 +696,69 @@ ACL 변경은 다음 action으로 기록한다.
 * deny ACL, 공개 링크, 이메일 초대, 외부 사용자, 버전별 ACL은 아직 구현하지 않았다.
 * Redis ACL cache는 정확성과 무효화 단순성을 위해 아직 사용하지 않는다.
 * 다음 단계는 **텍스트 추출·청킹**이며, chunk 조회와 vector search는 반드시 `READ_CONTENT` ACL scope를 사용해야 한다.
+
+## 문서 추출 및 청킹 파이프라인
+
+문서 업로드와 버전 업로드가 성공적으로 DB commit된 뒤 Celery 작업이 Redis broker에 등록됩니다. 작업 payload에는 `document_version_id` UUID 문자열만 포함하며, storage key, 파일 본문, 사용자 토큰, MinIO credential은 전달하지 않습니다. Worker는 DB에서 `DocumentVersion.storage_key`를 조회한 뒤 MinIO 원본 객체를 제한된 seek 가능한 임시 스트림으로 읽고 텍스트 추출과 결정론적 청킹을 수행합니다.
+
+지원 형식은 업로드 정책과 같은 `pdf`, `docx`, `pptx`, `xlsx`, `txt`, `md`입니다. OCR, 이미지 내용 분석, embedding 생성, pgvector 검색, RAG/LLM 호출은 이 단계에 포함하지 않습니다.
+
+추출 상태는 문서 자체 상태와 분리된 버전별 상태입니다.
+
+- `PENDING`: 추출 대기
+- `PROCESSING`: worker 처리 중
+- `SUCCEEDED`: 청크 저장 완료
+- `FAILED`: 안전한 오류 코드와 사용자용 일반 메시지 저장
+
+형식별 동작:
+
+- TXT/Markdown: UTF-8 또는 UTF-8-SIG로 읽고 NUL byte를 거부합니다. Markdown을 HTML로 렌더링하거나 외부 URL을 요청하지 않습니다.
+- PDF: `pypdf`의 `page.extract_text()`를 사용합니다. 암호화 PDF와 페이지 제한 초과 문서를 거부하며 이미지 OCR은 하지 않습니다.
+- DOCX: `python-docx`로 문단과 표 텍스트를 읽고 heading 스타일을 section title로 보존합니다. 매크로를 실행하지 않습니다.
+- PPTX: `python-pptx`로 슬라이드별 shape text를 추출하고 1부터 시작하는 slide number를 저장합니다.
+- XLSX: `openpyxl.load_workbook(read_only=True, data_only=True, keep_links=False)`로 값을 읽습니다. 수식은 실행하지 않고 저장된 계산 값만 사용합니다.
+
+청킹은 같은 입력에 대해 항상 같은 결과를 만들며, 문단 경계, 줄바꿈, 공백, 문자 경계 순으로 분할점을 선택합니다. 청크 index는 0부터 연속이고 SHA-256 해시, 문자 수, page/slide/sheet/row/section locator를 함께 저장합니다. 서로 다른 source locator를 가진 segment는 무리하게 병합하지 않습니다. `document_chunks.content`는 내부 저장용이며 공개 API로 반환하지 않습니다.
+
+Worker 실행:
+
+```bash
+docker compose --profile worker up -d worker
+docker compose logs -f worker
+```
+
+Worker import smoke test:
+
+```bash
+docker compose --profile worker run --rm --no-deps worker \
+  python -c "from app.worker import celery_app; print('worker-import-ok', celery_app.main)"
+```
+
+기존 `PENDING` 버전 enqueue:
+
+```bash
+docker compose run --rm backend python -m app.scripts.enqueue_pending_extractions
+```
+
+재시도 API:
+
+```text
+POST /api/v1/documents/{document_id}/versions/{version_id}/extraction/retry
+```
+
+문서 owner, `SYSTEM_ADMIN`, 또는 기존 `UPLOAD_VERSION` 권한 보유자만 재시도할 수 있습니다. `PROCESSING` 또는 `SUCCEEDED` 상태는 기본적으로 `409`로 거부하고, `FAILED` 또는 `PENDING` 버전만 다시 enqueue합니다.
+
+보안 제한과 실패 대응:
+
+- Worker는 DB의 `DocumentVersion.storage_key`만 사용하고 API 입력으로 storage key나 파일 경로를 받지 않습니다.
+- MinIO 다운로드 전에 `stat_object`로 크기를 확인하고 제한 초과 시 다운로드하지 않습니다.
+- 원본 파일명으로 임시 경로를 만들지 않고 `SpooledTemporaryFile`을 사용합니다.
+- 로그와 AuditLog에는 문서 원문, 전체 추출 텍스트, storage key, credential, token, 내부 stack trace를 기록하지 않습니다.
+- Queue 장애 시 업로드된 원본과 DB 버전은 유지하고 버전 추출 상태만 `FAILED` 및 `QUEUE_UNAVAILABLE`로 기록하므로 사용자가 재시도할 수 있습니다.
+- PostgreSQL `audit_action` enum에 추가된 추출 audit 값은 PostgreSQL 특성상 downgrade에서 안전하게 제거하지 않습니다. Migration downgrade는 데이터 파괴적인 enum 재생성을 수행하지 않습니다.
+
+## 로컬 검증 문서
+
+- Phase A 문서 추출 검증: `docs/LOCAL_VALIDATION_PHASE_A.md`
+- Phase A 자동 검증 스크립트: `./scripts/verify_phase_a.sh`
+- TXT 업로드 extraction smoke test: `python scripts/extraction_smoke_test.py`

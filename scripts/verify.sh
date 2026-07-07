@@ -3,8 +3,8 @@ set -euo pipefail
 
 required=(
   APP_ENV APP_NAME API_V1_PREFIX SECRET_KEY POSTGRES_HOST POSTGRES_PORT POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD
-  REDIS_URL MINIO_ENDPOINT MINIO_ACCESS_KEY MINIO_SECRET_KEY MINIO_DOCUMENT_BUCKET MINIO_PREVIEW_BUCKET
-  MINIO_BACKUP_BUCKET MINIO_DATABASE_BACKUP_BUCKET CORS_ORIGINS NEXT_PUBLIC_API_BASE_URL API_INTERNAL_BASE_URL
+  REDIS_URL CELERY_BROKER_URL MINIO_ENDPOINT MINIO_ACCESS_KEY MINIO_SECRET_KEY MINIO_DOCUMENT_BUCKET MINIO_PREVIEW_BUCKET
+  MINIO_BACKUP_BUCKET MINIO_DATABASE_BACKUP_BUCKET EXTRACTION_MAX_FILE_SIZE_MB EXTRACTION_MAX_PAGES EXTRACTION_MAX_SLIDES EXTRACTION_MAX_SHEETS EXTRACTION_MAX_ROWS_PER_SHEET EXTRACTION_MAX_CHARACTERS EXTRACTION_MAX_CHUNKS EXTRACTION_CHUNK_SIZE EXTRACTION_CHUNK_OVERLAP EXTRACTION_MAX_ATTEMPTS CORS_ORIGINS NEXT_PUBLIC_API_BASE_URL API_INTERNAL_BASE_URL
 )
 
 if [[ ! -f .env ]]; then
@@ -79,10 +79,12 @@ assert "pytest" in " ".join(backend_test_command), "backend-test must run pytest
 
 docker compose build backend
 docker compose --profile test build backend-test
+docker compose --profile worker build worker
 docker compose build frontend
 
 # Import smoke test runs before starting the full app stack so Python import failures are reported first.
 docker compose run --rm --no-deps backend python -c "from app.main import app; print('backend-import-ok')"
+docker compose --profile worker run --rm --no-deps worker python -c "from app.worker import celery_app; print(celery_app.main)"
 
 docker compose up -d postgres redis minio
 wait_for_healthy postgres 100
