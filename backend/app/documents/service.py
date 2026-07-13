@@ -16,10 +16,12 @@ from app.documents.repository import DocumentRepository
 from app.documents.storage import DocumentStorage
 from app.documents.validators import FileValidationResult, validate_title, validate_upload_stream
 from app.exceptions import ErrorCode, api_error
+from app.extraction.enqueue import enqueue_extraction
+from app.extraction.errors import ExtractionErrorCode
 from app.models.department import Department
 from app.models.document import Document, DocumentVersion
 from app.models.document_acl import DocumentAclEntry
-from app.models.enums import AclPermission, AuditAction, DocumentStatus
+from app.models.enums import AclPermission, AuditAction, DocumentStatus, ExtractionStatus
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -52,6 +54,7 @@ class DocumentService:
             document.status = DocumentStatus.ACTIVE
             self.audit.record(action=AuditAction.DOCUMENT_UPLOAD, actor_id=actor.id, target_type="Document", target_id=str(document.id), ip_address=ip_address, user_agent=user_agent, details=self._version_audit_details(document, version, result.normalized_filename, result, "success"))
             self.db.commit()
+            self._enqueue_after_commit(version)
             self.db.refresh(document)
             return document
         except Exception:
@@ -87,6 +90,7 @@ class DocumentService:
             document.status = DocumentStatus.ACTIVE
             self.audit.record(action=AuditAction.DOCUMENT_VERSION_UPLOAD, actor_id=actor.id, target_type="Document", target_id=str(document.id), ip_address=ip_address, user_agent=user_agent, details=self._version_audit_details(document, version, result.normalized_filename, result, "success"))
             self.db.commit()
+            self._enqueue_after_commit(version)
             self.db.refresh(document)
             return document
         except IntegrityError as exc:
@@ -202,6 +206,45 @@ class DocumentService:
         self.db.commit()
         self.db.refresh(document)
         return document
+
+
+    def retry_extraction(self, actor: User, document_id: uuid.UUID, version_id: uuid.UUID, ip_address: str | None, user_agent: str | None) -> DocumentVersion:
+        document = self.documents.get(document_id)
+        if document is None or document.is_deleted:
+            raise api_error(404, ErrorCode.DOCUMENT_NOT_FOUND, "문서를 찾을 수 없습니다.")
+        if not can_upload_version(actor, document, self.documents.granted_permissions(document.id, actor)):
+            raise api_error(403, ErrorCode.DOCUMENT_ACCESS_DENIED, "문서 추출 재시도 권한이 없습니다.")
+        version = self.documents.get_version(document.id, version_id)
+        if version is None:
+            raise api_error(404, ErrorCode.DOCUMENT_NOT_FOUND, "문서 버전을 찾을 수 없습니다.")
+        if version.extraction_status == ExtractionStatus.PROCESSING:
+            raise api_error(409, ErrorCode.VALIDATION_ERROR, "이미 추출 처리 중입니다.")
+        if version.extraction_status == ExtractionStatus.SUCCEEDED:
+            raise api_error(409, ErrorCode.VALIDATION_ERROR, "이미 추출 완료된 버전입니다.")
+        version.extraction_status = ExtractionStatus.PENDING
+        version.extraction_error_code = None
+        version.extraction_error_message = None
+        version.extracted_at = None
+        self.audit.record(action=AuditAction.DOCUMENT_EXTRACTION_RETRY, actor_id=actor.id, target_type="Document", target_id=str(document.id), ip_address=ip_address, user_agent=user_agent, details={"document_id": str(document.id), "version_id": str(version.id), "version_number": version.version_number, "status": "PENDING", "attempts": version.extraction_attempts, "chunk_count": version.chunk_count})
+        self.db.commit()
+        self._enqueue_after_commit(version)
+        self.db.refresh(version)
+        return version
+
+    def _enqueue_after_commit(self, version: DocumentVersion) -> None:
+        try:
+            enqueue_extraction(version.id)
+            self.audit.record(action=AuditAction.DOCUMENT_EXTRACTION_QUEUED, target_type="Document", target_id=str(version.document_id), details={"document_id": str(version.document_id), "version_id": str(version.id), "version_number": version.version_number, "status": "PENDING", "attempts": version.extraction_attempts, "chunk_count": version.chunk_count})
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            version = self.db.merge(version)
+            version.extraction_status = ExtractionStatus.FAILED
+            version.extraction_error_code = ExtractionErrorCode.QUEUE_UNAVAILABLE.value
+            version.extraction_error_message = "추출 작업을 대기열에 등록할 수 없습니다."
+            self.audit.record(action=AuditAction.DOCUMENT_EXTRACTION_FAILED, target_type="Document", target_id=str(version.document_id), details={"document_id": str(version.document_id), "version_id": str(version.id), "version_number": version.version_number, "status": "FAILED", "error_code": version.extraction_error_code, "attempts": version.extraction_attempts, "chunk_count": version.chunk_count})
+            self.db.commit()
+            logger.warning("document extraction enqueue unavailable version_id=%s", version.id)
 
     def _current_version(self, document: Document) -> DocumentVersion:
         version = next((item for item in document.versions if item.id == document.current_version_id), None)

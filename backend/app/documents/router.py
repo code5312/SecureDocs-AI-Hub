@@ -99,6 +99,14 @@ def list_document_versions(document_id: uuid.UUID, current_user: User = Depends(
     return [item for item in (_version_read(version, document.current_version_id) for version in versions) if item is not None]
 
 
+
+@router.post("/{document_id}/versions/{version_id}/extraction/retry", response_model=DocumentVersionRead)
+def retry_document_version_extraction(document_id: uuid.UUID, version_id: uuid.UUID, request: Request, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> DocumentVersionRead:
+    service = DocumentService(db)
+    version = service.retry_extraction(current_user, document_id, version_id, request_ip(request), request.headers.get("user-agent"))
+    document = service.get_document(current_user, document_id)
+    return _version_read(version, document.current_version_id)
+
 @router.get("/{document_id}/versions/{version_id}/download", response_class=StreamingResponse)
 def download_document_version(document_id: uuid.UUID, version_id: uuid.UUID, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> StreamingResponse:
     download = DocumentService(db).download_version(current_user, document_id, version_id)
