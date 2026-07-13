@@ -1,11 +1,19 @@
 from pathlib import Path
 
+from tests.repository_paths import find_repository_root
 
-ROUTER = Path("app/documents/router.py").read_text()
-SERVICE = Path("app/documents/service.py").read_text()
-REPOSITORY = Path("app/documents/repository.py").read_text()
-PERMISSIONS = Path("app/documents/permissions.py").read_text()
-SCHEMAS = Path("app/documents/schemas.py").read_text()
+ROOT = find_repository_root(Path(__file__))
+
+
+def read(path: str) -> str:
+    return (ROOT / path).read_text(encoding="utf-8")
+
+
+ROUTER = read("backend/app/documents/router.py")
+SERVICE = read("backend/app/documents/service.py")
+REPOSITORY = read("backend/app/documents/repository.py")
+PERMISSIONS = read("backend/app/documents/permissions.py")
+SCHEMAS = read("backend/app/documents/schemas.py")
 
 
 def test_version_routes_are_registered_without_reading_upload_into_bytes() -> None:
@@ -26,7 +34,7 @@ def test_version_number_uses_row_lock_and_max_query_not_len_versions() -> None:
 
 def test_version_permissions_and_duplicate_checksum_policy_exist() -> None:
     assert "def can_upload_version" in PERMISSIONS
-    access = Path("app/documents/access.py").read_text()
+    access = read("backend/app/documents/access.py")
     assert "UserRole.SYSTEM_ADMIN" in access
     assert "document.owner_id == user.id" in access
     assert "DOCUMENT_VERSION_DUPLICATE" in SERVICE
@@ -42,4 +50,4 @@ def test_version_audit_actions_and_compensation_exist() -> None:
     assert "DOCUMENT_VERSION_UPLOAD" in SERVICE
     assert "DOCUMENT_VERSION_DOWNLOAD" in SERVICE
     assert "remove_uploaded_object(storage_key)" in SERVICE
-    assert "DOCUMENT_VERSION_DOWNLOAD" in Path("app/models/enums.py").read_text()
+    assert "DOCUMENT_VERSION_DOWNLOAD" in read("backend/app/models/enums.py")

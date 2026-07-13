@@ -1,21 +1,25 @@
-# SecureDocs AI Hub API Notes
+# API Notes
 
 ## Phase A extraction endpoints
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `POST` | `/api/v1/documents` | Upload document and enqueue extraction after commit. |
-| `POST` | `/api/v1/documents/{document_id}/versions` | Upload a new version and enqueue extraction after commit. |
-| `GET` | `/api/v1/documents/{document_id}` | Returns current version extraction metadata. |
-| `GET` | `/api/v1/documents/{document_id}/versions` | Returns all version extraction metadata. |
-| `POST` | `/api/v1/documents/{document_id}/versions/{version_id}/extraction/retry` | Retry a `FAILED` or `PENDING` extraction if the caller can upload versions. |
+### Retry extraction
+
+```text
+POST /api/v1/documents/{document_id}/versions/{version_id}/extraction/retry
+```
+
+Allowed callers are the document owner, `SYSTEM_ADMIN`, or users with the existing `UPLOAD_VERSION` permission. Deleted documents are rejected. `PROCESSING` and `SUCCEEDED` versions return conflict responses; `FAILED` and `PENDING` versions can be reset to `PENDING` and re-enqueued.
 
 `DocumentVersionRead` includes `extraction_status`, `extraction_error_code`, `extraction_error_message`, `extraction_attempts`, `extracted_at`, and `chunk_count`. Chunk content is not exposed by a public API in Phase A.
 
-## Backfill command
+## External entrypoint
 
-```bash
-docker compose run --rm backend python -m app.scripts.enqueue_pending_extractions
+Local HTTP access should use Nginx:
+
+```text
+http://localhost/api/v1/health
+http://localhost/docs
+http://localhost/openapi.json
 ```
 
-The command prints only the number of enqueued versions.
+Backend and frontend container ports are not published to the host in the standard Compose contract.

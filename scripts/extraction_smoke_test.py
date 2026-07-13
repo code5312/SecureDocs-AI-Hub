@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -19,11 +20,38 @@ ADMIN_EMAIL = os.getenv("SECUREDOCS_ADMIN_EMAIL")
 ADMIN_PASSWORD = os.getenv("SECUREDOCS_ADMIN_PASSWORD")
 TIMEOUT_SECONDS = int(os.getenv("SECUREDOCS_EXTRACTION_SMOKE_TIMEOUT_SECONDS", "120"))
 POLL_SECONDS = float(os.getenv("SECUREDOCS_EXTRACTION_SMOKE_POLL_SECONDS", "2"))
+_BODY_LIMIT = 500
+_SECRET_PATTERNS = (
+    re.compile(r'("?(?:access_token|refresh_token|token|password|cookie|authorization)"?\s*[:=]\s*)"?[^"\s,}]+' , re.IGNORECASE),
+    re.compile(r"(Bearer\s+)[A-Za-z0-9._~+/-]+=*", re.IGNORECASE),
+)
 
 
-def fail(message: str) -> None:
-    print(f"ERROR: {message}", file=sys.stderr)
-    raise SystemExit(1)
+def sanitize(value: object, limit: int = _BODY_LIMIT) -> str:
+    text = str(value)[:limit]
+    for pattern in _SECRET_PATTERNS:
+        text = pattern.sub(r"\1[REDACTED]", text)
+    return text
+
+
+def fail(message: str, exit_code: int = 1) -> None:
+    print(f"ERROR: {sanitize(message)}", file=sys.stderr)
+    raise SystemExit(exit_code)
+
+
+def preflight() -> None:
+    try:
+        req = request.Request(f"{API_BASE_URL}/health", method="GET")
+        with request.urlopen(req, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        print(f"preflight_ok api_base={API_BASE_URL} status={payload.get('status', '-')}")
+    except (error.HTTPError, error.URLError, TimeoutError, ConnectionError, json.JSONDecodeError) as exc:
+        print(f"ERROR: API preflight failed for {API_BASE_URL}: {sanitize(exc)}", file=sys.stderr)
+        print("Check that Nginx/backend are running and reachable through localhost:80.", file=sys.stderr)
+        print("Suggested commands:", file=sys.stderr)
+        print("  docker compose ps -a", file=sys.stderr)
+        print("  docker compose logs --tail=100 nginx backend frontend", file=sys.stderr)
+        raise SystemExit(1)
 
 
 class ApiClient:
@@ -87,6 +115,7 @@ def _file_part(boundary: str, name: str, filename: str, content_type: str, value
 
 
 def main() -> None:
+    preflight()
     client = ApiClient()
     try:
         client.login()
@@ -99,6 +128,8 @@ def main() -> None:
 
         deadline = time.monotonic() + TIMEOUT_SECONDS
         last_status = version.get("extraction_status")
+        if last_status not in {"PENDING", "PROCESSING", "SUCCEEDED"}:
+            fail(f"unexpected initial extraction status: {last_status}")
         while time.monotonic() < deadline:
             current = client.request_json("GET", f"/documents/{document_id}")
             version = current.get("current_version") or {}
@@ -116,15 +147,17 @@ def main() -> None:
                 print(
                     "extraction_failed "
                     f"document_id={document_id} version_id={version_id} "
-                    f"error_code={version.get('extraction_error_code')} "
-                    f"message={version.get('extraction_error_message')}"
+                    f"error_code={sanitize(version.get('extraction_error_code'))} "
+                    f"message={sanitize(version.get('extraction_error_message'), 200)}"
                 )
                 raise SystemExit(2)
             time.sleep(POLL_SECONDS)
         fail(f"timed out waiting for extraction status; last_status={last_status}")
     except error.HTTPError as exc:
-        safe_body = exc.read().decode("utf-8", errors="replace")[:500]
-        fail(f"HTTP {exc.code}: {safe_body}")
+        body = exc.read().decode("utf-8", errors="replace")
+        fail(f"HTTP {exc.code}: {sanitize(body)}")
+    except (error.URLError, TimeoutError, ConnectionError, json.JSONDecodeError, KeyError) as exc:
+        fail(f"smoke test failed: {sanitize(exc)}")
 
 
 if __name__ == "__main__":

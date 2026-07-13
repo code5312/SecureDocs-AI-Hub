@@ -1,58 +1,78 @@
 # Phase A Local Validation — Document Extraction Pipeline
 
-Phase A covers repository audit, Celery enqueue repair, Alembic extraction metadata checks, and the asynchronous document text extraction/chunking pipeline. Phase B (embedding/vector search) must not start until these checks pass in a local Docker environment.
+Phase A covers Celery enqueue/runtime validation, Alembic extraction metadata checks, and the asynchronous document text extraction/chunking pipeline. Phase B/C work (embedding, pgvector, RAG, classification, recommendations, comments, backup) must not start until this local gate passes.
 
-## Gap matrix after Phase A
+## Current implementation matrix
 
-| Area | Current status | Notes / next phase |
+| Area | Status | Notes |
 | --- | --- | --- |
-| Auth, JWT access token, HttpOnly refresh token | Implemented | Regression checks remain in backend/frontend tests. |
-| Users/departments/admin roles | Implemented | Existing APIs preserved. |
-| Document upload/download/versioning | Implemented | Upload enqueue now happens only after DB commit. |
-| ACL and SQL metadata filtering | Implemented | Future vector search must reuse `READ_CONTENT` SQL predicate. |
-| Audit logs | Implemented | Extraction audit details exclude document text, storage keys, tokens, credentials, and stack traces. |
-| MinIO original storage | Implemented | Extraction reads only DB-owned `DocumentVersion.storage_key`. |
-| Celery/Redis extraction queue | Implemented in Phase A | `enqueue_extraction()` uses `celery_app.send_task()` with task name `app.extraction.extract_document_version`. |
-| TXT/MD/PDF/DOCX/PPTX/XLSX extraction | Implemented in Phase A | No OCR, no external URL fetching, no macro execution. |
-| Deterministic source-preserving chunking | Implemented in Phase A | Chunks include source locator fields and SHA-256. |
-| Existing PENDING version backfill | Implemented in Phase A | `python -m app.scripts.enqueue_pending_extractions`. |
-| Embeddings / pgvector search | Not implemented | Phase B. |
-| RAG chat / citations | Not implemented | Phase C after Phase B validation. |
-| Classification/tags/similar docs/comments/backup | Not implemented | Phase C scope. |
+| Auth, users, departments, roles | Implemented | JWT access token and HttpOnly refresh cookie are already part of the app. |
+| Documents, versions, ACL, audit logs | Implemented | Keep backend authorization as the security boundary. |
+| MinIO original storage | Implemented | Storage keys remain DB-owned and are not accepted from API/task payloads. |
+| Celery/Redis extraction queue | Phase A implemented | Enqueue uses `celery_app.send_task("app.extraction.extract_document_version", args=[version_id])`. |
+| TXT/MD/PDF/DOCX/PPTX/XLSX extraction | Phase A implemented | No OCR, no macro execution, no external URL fetching. |
+| Deterministic source-preserving chunking | Phase A implemented | Chunk content is internal and not exposed through public API. |
+| PENDING backfill | Phase A implemented | `python -m app.scripts.enqueue_pending_extractions`. |
+| Embedding, vector search, RAG | Not implemented | Phase B/C only. |
 
-## Required environment
+## Runtime contract
 
-1. Copy development env values:
+- External HTTP entrypoint: `http://localhost` through Nginx.
+- Docker service DNS inside Compose: `postgres`, `redis`, `minio`.
+- Backend/worker/test container paths: `WORKDIR=/workspace/backend`.
+- Host repository root test path: `backend/tests/test_extraction_static.py`.
+- After `cd backend`, and inside `backend-test`, pytest arguments use `tests/test_extraction_static.py`.
+- Python support target: Python 3.12. Docker backend validation is the standard path; other Python versions need explicit compatibility verification.
 
-```bash
-cp .env.example .env
-```
+## Canonical one-command validation
 
-2. Ensure the app has an admin user that can upload documents. Use the same admin email/password with the smoke test environment variables below.
-
-3. Do not delete PostgreSQL, Redis, or MinIO volumes during validation. Avoid `docker compose down -v`.
-
-## One-command Phase A checks
+Run from the repository root:
 
 ```bash
-./scripts/verify_phase_a.sh
+bash scripts/verify_phase_a.sh
 ```
 
-The script performs local Python syntax checks, targeted backend pytest checks when dependencies are installed, frontend static/type/lint/build checks when `npm` is available, and Docker Compose/Alembic/worker smoke checks when Docker CLI is available.
+The script performs Python syntax checks, Docker Compose config validation, image builds, backend/worker imports, dependency startup, Alembic head checks, Nginx/API health checks, worker ping and registered-task checks, PENDING backfill import/runtime check, targeted backend tests, and frontend tests/type-check/lint/build.
 
-## Docker-backed extraction smoke test
+If Docker is unavailable, the script does not silently pass core Phase A validation. It falls back only to host checks that can actually run and exits with a clear error when required dependencies are missing.
 
-Start dependencies and services:
+## Targeted backend tests
+
+Host path from repository root:
 
 ```bash
-docker compose up -d postgres redis minio
-docker compose run --rm minio-init
-docker compose run --rm backend alembic upgrade head
-docker compose up -d backend
-docker compose --profile worker up -d worker
+backend/tests/test_extraction_static.py
+backend/tests/test_extraction_enqueue.py
+backend/tests/test_document_versions_static.py
+backend/tests/test_document_acl_static.py
 ```
 
-Run a TXT upload → extraction status polling smoke test:
+Host after `cd backend`:
+
+```bash
+python -m pytest -q \
+  tests/test_extraction_static.py \
+  tests/test_extraction_enqueue.py \
+  tests/test_document_versions_static.py \
+  tests/test_document_acl_static.py
+```
+
+Docker `backend-test`:
+
+```bash
+docker compose --profile test run --rm backend-test \
+  python -m pytest -q \
+  tests/test_extraction_static.py \
+  tests/test_extraction_enqueue.py \
+  tests/test_document_versions_static.py \
+  tests/test_document_acl_static.py
+```
+
+Do not use `backend/tests/...` as a pytest argument inside the `backend-test` container.
+
+## Optional authenticated extraction smoke test
+
+The smoke test runs only when credentials are explicitly provided:
 
 ```bash
 SECUREDOCS_API_BASE_URL=http://localhost/api/v1 \
@@ -61,20 +81,14 @@ SECUREDOCS_ADMIN_PASSWORD='change-me' \
 python scripts/extraction_smoke_test.py
 ```
 
-The smoke test logs document/version identifiers, extraction status, safe error code/message, and chunk count only. It never prints access tokens, refresh tokens, MinIO credentials, storage keys, or document body text.
+Without `SECUREDOCS_ADMIN_EMAIL` and `SECUREDOCS_ADMIN_PASSWORD`, `scripts/verify_phase_a.sh` prints:
 
-## Expected results
-
-- `docker compose run --rm backend python -m app.scripts.enqueue_pending_extractions` completes without `ImportError` and prints only an enqueue count.
-- `docker compose --profile worker run --rm --no-deps worker python -c "from app.worker import celery_app; print('worker-import-ok', celery_app.main)"` imports the registered worker app.
-- A TXT upload transitions from `PENDING` or `PROCESSING` to `SUCCEEDED` and has `chunk_count > 0`.
-- Re-running a delivered task for a `SUCCEEDED` version is a no-op and does not duplicate chunks.
-
-## Phase B gate
-
-Only start Phase B after sharing local results for:
-
-```bash
-./scripts/verify_phase_a.sh
-SECUREDOCS_API_BASE_URL=http://localhost/api/v1 SECUREDOCS_ADMIN_EMAIL=... SECUREDOCS_ADMIN_PASSWORD=... python scripts/extraction_smoke_test.py
+```text
+SKIP: extraction API smoke test requires SECUREDOCS_ADMIN_EMAIL and SECUREDOCS_ADMIN_PASSWORD
 ```
+
+The smoke test performs API preflight, login, TXT upload, extraction polling, and `chunk_count > 0` validation. It does not print passwords, access tokens, refresh tokens, cookies, storage keys, or document content.
+
+## Frontend dependency security note
+
+Update `next` and `eslint-config-next` together to a compatible patched release, then regenerate `frontend/package-lock.json` with `npm install`/`npm ci` in an environment that can access the npm registry. Do not use `npm audit fix --force`. Record `npm audit` results separately from this validation gate.
