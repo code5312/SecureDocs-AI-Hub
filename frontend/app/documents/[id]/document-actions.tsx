@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ApiClientError } from "../../../lib/api-shared";
-import { deleteDocument, downloadDocument, downloadDocumentVersion, grantDocumentAcl, listDocumentAcl, revokeDocumentAcl, searchDocumentAclPrincipals, uploadDocumentVersion } from "../../../lib/documents-api";
-import { documentPermissionLabels, formatFileSize, shortChecksum, type DocumentAclEntry, type DocumentAclPrincipalSearch, type DocumentPermission, type DocumentRecord, type DocumentVersion } from "../../../lib/documents";
+import { deleteDocument, downloadDocument, downloadDocumentVersion, grantDocumentAcl, listDocumentAcl, retryDocumentVersionExtraction, revokeDocumentAcl, searchDocumentAclPrincipals, uploadDocumentVersion } from "../../../lib/documents-api";
+import { documentPermissionLabels, extractionStatusLabels, formatFileSize, shortChecksum, type DocumentAclEntry, type DocumentAclPrincipalSearch, type DocumentPermission, type DocumentRecord, type DocumentVersion } from "../../../lib/documents";
 
 const permissionOptions: DocumentPermission[] = ["VIEW_METADATA", "READ_CONTENT", "UPLOAD_VERSION", "DELETE", "MANAGE_ACL"];
 
@@ -22,6 +22,7 @@ export function DocumentActions({ document, versions, onChanged }: { document: D
   const [isDeleting, setDeleting] = useState(false);
   const [versionFile, setVersionFile] = useState<File | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [retryingVersionId, setRetryingVersionId] = useState<string | null>(null);
 
   const canRead = hasPermission(document, "READ_CONTENT");
   const canUploadVersion = hasPermission(document, "UPLOAD_VERSION");
@@ -68,6 +69,24 @@ export function DocumentActions({ document, versions, onChanged }: { document: D
     }
   }
 
+
+  async function handleRetryExtraction(version: DocumentVersion) {
+    if (!canUploadVersion || retryingVersionId) {
+      return;
+    }
+    setRetryingVersionId(version.id);
+    setMessage(null);
+    try {
+      await retryDocumentVersionExtraction(document.id, version.id);
+      setMessage("문서 추출을 다시 요청했습니다.");
+      await onChanged();
+    } catch (caught) {
+      setMessage(messageFrom(caught));
+    } finally {
+      setRetryingVersionId(null);
+    }
+  }
+
   async function handleDelete() {
     if (isDeleting || !canDelete || !confirm("문서를 논리 삭제하시겠습니까?")) {
       return;
@@ -103,14 +122,14 @@ export function DocumentActions({ document, versions, onChanged }: { document: D
         </div>
       ) : null}
 
-      <VersionHistory versions={versions} canRead={canRead} isDownloading={isDownloading} onDownload={handleDownload} />
+      <VersionHistory versions={versions} canRead={canRead} canRetry={canUploadVersion} isDownloading={isDownloading} retryingVersionId={retryingVersionId} onDownload={handleDownload} onRetry={handleRetryExtraction} />
       {canManageAcl ? <AclManager documentId={document.id} /> : null}
       {message ? <p className="text-sm text-slate-600">{message}</p> : null}
     </div>
   );
 }
 
-function VersionHistory({ versions, canRead, isDownloading, onDownload }: { versions: DocumentVersion[]; canRead: boolean; isDownloading: string | null; onDownload: (version: DocumentVersion) => Promise<void> }) {
+function VersionHistory({ versions, canRead, canRetry, isDownloading, retryingVersionId, onDownload, onRetry }: { versions: DocumentVersion[]; canRead: boolean; canRetry: boolean; isDownloading: string | null; retryingVersionId: string | null; onDownload: (version: DocumentVersion) => Promise<void>; onRetry: (version: DocumentVersion) => Promise<void> }) {
   return (
     <div className="rounded-lg border border-slate-200 p-4">
       <h2 className="font-semibold">버전 이력</h2>
@@ -118,7 +137,7 @@ function VersionHistory({ versions, canRead, isDownloading, onDownload }: { vers
       {versions.length > 0 ? (
         <div className="mt-3 overflow-x-auto">
           <table className="w-full text-left text-sm">
-            <thead><tr className="border-b"><th className="py-2">버전</th><th>파일명</th><th>크기</th><th>MIME</th><th>업로드 사용자</th><th>SHA-256</th><th>작업</th></tr></thead>
+            <thead><tr className="border-b"><th className="py-2">버전</th><th>파일명</th><th>크기</th><th>MIME</th><th>추출 상태</th><th>청크</th><th>추출 완료</th><th>업로드 사용자</th><th>SHA-256</th><th>작업</th></tr></thead>
             <tbody>
               {versions.map((version) => (
                 <tr className="border-b last:border-0" key={version.id}>
@@ -126,9 +145,12 @@ function VersionHistory({ versions, canRead, isDownloading, onDownload }: { vers
                   <td>{version.normalized_filename}</td>
                   <td>{formatFileSize(version.file_size)}</td>
                   <td>{version.mime_type}</td>
+                  <td>{extractionStatusLabels[version.extraction_status]}{version.extraction_status === "FAILED" && version.extraction_error_message ? <p className="text-xs text-rose-600">{version.extraction_error_message}</p> : null}</td>
+                  <td>{version.chunk_count}</td>
+                  <td>{version.extracted_at ? new Date(version.extracted_at).toLocaleString() : "-"}</td>
                   <td>{version.uploaded_by}</td>
                   <td title={version.checksum_sha256}>{shortChecksum(version.checksum_sha256)}</td>
-                  <td>{canRead ? <button className="rounded border px-3 py-1 disabled:opacity-60" disabled={Boolean(isDownloading)} onClick={() => void onDownload(version)} type="button">{isDownloading === version.id ? "다운로드 중..." : "다운로드"}</button> : <span className="text-slate-400">권한 없음</span>}</td>
+                  <td><div className="flex gap-2">{canRead ? <button className="rounded border px-3 py-1 disabled:opacity-60" disabled={Boolean(isDownloading)} onClick={() => void onDownload(version)} type="button">{isDownloading === version.id ? "다운로드 중..." : "다운로드"}</button> : <span className="text-slate-400">권한 없음</span>}{canRetry && version.extraction_status === "FAILED" ? <button className="rounded border px-3 py-1 text-amber-700 disabled:opacity-60" disabled={Boolean(retryingVersionId)} onClick={() => void onRetry(version)} type="button">{retryingVersionId === version.id ? "재시도 중..." : "추출 재시도"}</button> : null}</div></td>
                 </tr>
               ))}
             </tbody>

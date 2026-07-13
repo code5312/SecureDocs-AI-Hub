@@ -2,21 +2,19 @@
 
 SecureDocs AI Hub는 기업 문서 자산을 중앙에서 관리하고 접근제어, 버전 관리, 협업, 감사 로그, AI 추천, 권한 필터가 적용된 RAG 문서 채팅을 제공하기 위한 포트폴리오용 프로토타입입니다. 특정 상용 제품의 소스코드나 화면을 복제하지 않고 일반적인 기업용 문서중앙화 및 AI 지식관리 요구사항을 직접 설계합니다.
 
-## 이번 기반 작업 범위
+## 구현 상태 요약
 
-- Docker Compose 기반 `nginx`, `frontend`, `backend`, `postgres`, `redis`, `minio`, `minio-init` 구성
-- PostgreSQL `pgvector` 확장 초기화
-- MinIO 기본 버킷 생성: `documents-original`, `documents-preview`, `documents-backup`, `database-backup`
-- FastAPI 기본 애플리케이션과 `/api/v1/health` 상태 확인 API
-- PostgreSQL, Redis, MinIO 연결 상태 확인
-- Next.js App Router 기반 관리자 레이아웃과 상태 확인 화면
-- Nginx 리버스 프록시
-- 백엔드 헬스체크 테스트
+- 구현 완료: Docker Compose 기반 `nginx`, `frontend`, `backend`, `postgres`, `redis`, `minio`, `minio-init`, FastAPI health API, 인증/JWT refresh, 사용자·부서 관리, 문서 업로드·다운로드·버전, 문서 ACL, 감사 로그, MinIO 원본 저장.
+- Phase A 구현 완료 및 로컬 검증 대상: Redis/Celery worker, 문서 버전별 추출 상태, TXT/MD/PDF/DOCX/PPTX/XLSX 텍스트 추출, 결정론적 청킹, retry API, PENDING backfill, 검증 스크립트.
+- Phase B 미구현: embedding provider, pgvector chunk 검색, ACL vector search, 유사 문서 추천.
+- Phase C 미구현: RAG 채팅, 자동 분류, 댓글/활동 내역, 관리자 백업/복구 검증, 전체 AI UI 연결.
+
+외부 HTTP 진입점은 Nginx `http://localhost`로 통일합니다. Backend와 frontend container port는 Compose 내부 네트워크에서 사용하며, 별도 development profile 없이 호스트에 직접 공개하지 않습니다.
 
 ## 사전 요구사항
 
 - Docker 및 Docker Compose plugin
-- Python 3.12 이상
+- Python 3.12 권장 및 CI 기준. Docker 기반 backend 검증이 표준이며 다른 Python 버전은 별도 호환성 확인이 필요합니다.
 - Node.js 22 이상 및 npm
 
 ## 디렉터리 구조
@@ -138,10 +136,12 @@ docker compose run --rm minio-init
 
 ## worker 현재 상태와 역할
 
-Celery 앱과 백그라운드 작업은 아직 구현 범위가 아닙니다. `worker` 서비스는 `worker` profile에 넣어 기본 `docker compose up`에서는 시작하지 않도록 명확히 비활성화했습니다. 실행 가능성 검증을 위해 `python -m app.worker` 진입점은 존재하지만, 현재는 기반 단계 안내 메시지를 출력하고 종료합니다.
+Celery worker는 문서 버전별 텍스트 추출과 청킹 작업을 처리합니다. `worker` 서비스는 `worker` profile에 있어 기본 `docker compose up`에서는 시작하지 않으며, Redis broker와 PostgreSQL/MinIO가 준비된 뒤 별도로 실행합니다.
 
 ```bash
-docker compose --profile worker run --rm worker
+docker compose --profile worker up -d worker
+docker compose --profile worker run --rm --no-deps worker \
+  python -c "from app.worker import celery_app; print('worker-import-ok', celery_app.main)"
 ```
 
 ## Docker 실행·테스트 명령 구분
@@ -152,7 +152,7 @@ docker compose --profile worker run --rm worker
 | --- | --- | --- | --- |
 | `backend` | `runtime` | `docker compose up -d`에서 실행 | `uvicorn app.main:app --host 0.0.0.0 --port 8000` |
 | `backend-test` | `test` | `test` profile에서만 실행 | `python -m pytest -v` |
-| `worker` | `runtime` | `worker` profile에서만 실행 | 백그라운드 worker 진입점 검증 |
+| `worker` | `runtime` | `worker` profile에서만 실행 | Celery extraction worker |
 
 정상 상태의 backend command는 `uvicorn`이어야 하며, `python -m pytest -v`가 backend runtime service에 적용되면 잘못된 구성입니다. `minio-init`가 `Exited (0)`으로 보이는 것은 버킷 초기화가 완료된 정상 상태입니다.
 
@@ -263,7 +263,7 @@ git diff --check
 
 ## 아직 구현하지 않은 기능
 
-이번 작업은 기반 환경 검증 및 보정 범위입니다. 인증, JWT, 사용자·부서·역할 관리, 문서 업로드, 문서 권한, RAG, AI 추천, 백업 실행 로직, 협업 기능은 후속 작업에서 구현합니다.
+Phase B/C 범위인 embedding provider, pgvector 검색, ACL 기반 vector search, RAG 채팅, 자동 분류, 유사 문서 추천, 댓글/활동 내역, 관리자 백업과 restore dry-run UI는 아직 구현하지 않았습니다. 인증, JWT, 사용자·부서·역할 관리, 문서 업로드·다운로드·버전, 문서 ACL, 감사 로그, MinIO 저장, Phase A 문서 추출·청킹은 현재 코드에 포함되어 있습니다.
 
 ## 인증·사용자·부서 관리
 
@@ -342,11 +342,11 @@ curl -i -X POST http://localhost/api/v1/auth/login \
 
 ### 아직 구현하지 않은 인증 관련 항목
 
-프론트엔드 사용자/부서 화면은 기반 UI만 제공하며 실제 폼 상태와 API 연동은 후속 작업에서 보강합니다. 문서 업로드, 문서 ACL, RAG, AI 추천, 백업 실행 로직은 아직 구현하지 않았습니다.
+프론트엔드 사용자/부서 화면의 세부 UX 보강은 후속 작업 대상입니다. RAG, AI 추천, 백업 실행 로직은 아직 구현하지 않았습니다.
 
 ## 문서 메타데이터·업로드 기반
 
-이번 단계는 문서 ACL, 본문 추출, OCR, 임베딩, RAG 없이 최초 문서 업로드와 원본 파일 저장 기반만 제공합니다.
+현재 단계는 문서 업로드, 다운로드, 버전 관리, 문서 ACL, MinIO 원본 저장, Phase A 텍스트 추출·청킹을 제공합니다. OCR, 임베딩, pgvector 검색, RAG는 아직 포함하지 않습니다.
 
 ### 업로드 흐름
 
@@ -364,9 +364,9 @@ curl -i -X POST http://localhost/api/v1/auth/login \
 
 업로드 stream을 1MB 청크 단위로 읽으면서 SHA-256 체크섬을 계산해 `document_versions.checksum_sha256`에 저장합니다. 확장자와 Content-Type을 함께 확인하고 PDF signature 및 Office Open XML 필수 ZIP entry를 확인합니다. ClamAV 연동 위치는 `documents.validators` 이후 MinIO 저장 전 단계이며, 현재 실제 ClamAV 검사는 수행하지 않습니다.
 
-### 임시 접근제어 정책
+### 문서 접근제어 정책
 
-문서 ACL이 아직 없으므로 임시 역할 정책을 사용합니다. `SYSTEM_ADMIN`은 모든 문서 메타데이터와 다운로드/삭제가 가능하고, `DOCUMENT_ADMIN`은 모든 메타데이터를 볼 수 있지만 자신이 업로드한 문서만 다운로드/삭제할 수 있습니다. `DEPARTMENT_MANAGER`는 같은 부서 문서 메타데이터를 볼 수 있으나 다른 사용자의 원본 다운로드는 금지됩니다. `USER`는 자신이 업로드한 문서만 접근할 수 있습니다. 이 정책은 향후 문서 ACL로 교체됩니다.
+문서별 ACL과 역할 정책을 함께 적용합니다. `SYSTEM_ADMIN`은 관리자 권한으로 문서를 관리할 수 있고, 문서 owner와 ACL entry에 부여된 사용자·부서 권한에 따라 `READ_METADATA`, `READ_CONTENT`, `DOWNLOAD`, `UPLOAD_VERSION`, `MANAGE_ACL`, `DELETE` 같은 작업을 허용합니다. 프론트엔드 권한 표시는 편의용이며 실제 판단은 backend API에서 다시 수행합니다.
 
 ### 논리 삭제와 일관성 처리
 
@@ -386,7 +386,7 @@ curl -i -X POST http://localhost/api/v1/documents \
 
 ### 아직 구현하지 않은 문서 기능
 
-문서별 ACL, 사용자/부서 공유, 외부 공유 링크, 두 번째 버전 업로드, 본문 추출, OCR, 임베딩, RAG, AI 분류/추천, ClamAV 실제 검사, PDF 미리보기, 영구 삭제와 보존 정책은 후속 단계에서 구현합니다.
+외부 공개 공유 링크, OCR, 임베딩, RAG, AI 분류/추천, ClamAV 실제 검사, PDF 미리보기, 영구 삭제와 보존 정책은 후속 단계에서 구현합니다.
 
 ## 프론트엔드 인증 세션
 
@@ -693,4 +693,71 @@ ACL 변경은 다음 action으로 기록한다.
 
 * deny ACL, 공개 링크, 이메일 초대, 외부 사용자, 버전별 ACL은 아직 구현하지 않았다.
 * Redis ACL cache는 정확성과 무효화 단순성을 위해 아직 사용하지 않는다.
-* 다음 단계는 **텍스트 추출·청킹**이며, chunk 조회와 vector search는 반드시 `READ_CONTENT` ACL scope를 사용해야 한다.
+* Phase A 텍스트 추출·청킹은 구현되어 있으며, 다음 단계의 chunk 조회와 vector search는 반드시 `READ_CONTENT` ACL scope를 사용해야 한다.
+
+## 문서 추출 및 청킹 파이프라인
+
+문서 업로드와 버전 업로드가 성공적으로 DB commit된 뒤 Celery 작업이 Redis broker에 등록됩니다. 작업 payload에는 `document_version_id` UUID 문자열만 포함하며, storage key, 파일 본문, 사용자 토큰, MinIO credential은 전달하지 않습니다. Worker는 DB에서 `DocumentVersion.storage_key`를 조회한 뒤 MinIO 원본 객체를 제한된 seek 가능한 임시 스트림으로 읽고 텍스트 추출과 결정론적 청킹을 수행합니다.
+
+지원 형식은 업로드 정책과 같은 `pdf`, `docx`, `pptx`, `xlsx`, `txt`, `md`입니다. OCR, 이미지 내용 분석, embedding 생성, pgvector 검색, RAG/LLM 호출은 이 단계에 포함하지 않습니다.
+
+추출 상태는 문서 자체 상태와 분리된 버전별 상태입니다.
+
+- `PENDING`: 추출 대기
+- `PROCESSING`: worker 처리 중
+- `SUCCEEDED`: 청크 저장 완료
+- `FAILED`: 안전한 오류 코드와 사용자용 일반 메시지 저장
+
+형식별 동작:
+
+- TXT/Markdown: UTF-8 또는 UTF-8-SIG로 읽고 NUL byte를 거부합니다. Markdown을 HTML로 렌더링하거나 외부 URL을 요청하지 않습니다.
+- PDF: `pypdf`의 `page.extract_text()`를 사용합니다. 암호화 PDF와 페이지 제한 초과 문서를 거부하며 이미지 OCR은 하지 않습니다.
+- DOCX: `python-docx`로 문단과 표 텍스트를 읽고 heading 스타일을 section title로 보존합니다. 매크로를 실행하지 않습니다.
+- PPTX: `python-pptx`로 슬라이드별 shape text를 추출하고 1부터 시작하는 slide number를 저장합니다.
+- XLSX: `openpyxl.load_workbook(read_only=True, data_only=True, keep_links=False)`로 값을 읽습니다. 수식은 실행하지 않고 저장된 계산 값만 사용합니다.
+
+청킹은 같은 입력에 대해 항상 같은 결과를 만들며, 문단 경계, 줄바꿈, 공백, 문자 경계 순으로 분할점을 선택합니다. 청크 index는 0부터 연속이고 SHA-256 해시, 문자 수, page/slide/sheet/row/section locator를 함께 저장합니다. 서로 다른 source locator를 가진 segment는 무리하게 병합하지 않습니다. `document_chunks.content`는 내부 저장용이며 공개 API로 반환하지 않습니다.
+
+Worker 실행:
+
+```bash
+docker compose --profile worker up -d worker
+docker compose logs -f worker
+```
+
+Worker import smoke test:
+
+```bash
+docker compose --profile worker run --rm --no-deps worker \
+  python -c "from app.worker import celery_app; print('worker-import-ok', celery_app.main)"
+```
+
+기존 `PENDING` 버전 enqueue:
+
+```bash
+docker compose run --rm backend python -m app.scripts.enqueue_pending_extractions
+```
+
+재시도 API:
+
+```text
+POST /api/v1/documents/{document_id}/versions/{version_id}/extraction/retry
+```
+
+문서 owner, `SYSTEM_ADMIN`, 또는 기존 `UPLOAD_VERSION` 권한 보유자만 재시도할 수 있습니다. `PROCESSING` 또는 `SUCCEEDED` 상태는 기본적으로 `409`로 거부하고, `FAILED` 또는 `PENDING` 버전만 다시 enqueue합니다.
+
+보안 제한과 실패 대응:
+
+- Worker는 DB의 `DocumentVersion.storage_key`만 사용하고 API 입력으로 storage key나 파일 경로를 받지 않습니다.
+- MinIO 다운로드 전에 `stat_object`로 크기를 확인하고 제한 초과 시 다운로드하지 않습니다.
+- 원본 파일명으로 임시 경로를 만들지 않고 `SpooledTemporaryFile`을 사용합니다.
+- 로그와 AuditLog에는 문서 원문, 전체 추출 텍스트, storage key, credential, token, 내부 stack trace를 기록하지 않습니다.
+- Queue 장애 시 업로드된 원본과 DB 버전은 유지하고 버전 추출 상태만 `FAILED` 및 `QUEUE_UNAVAILABLE`로 기록하므로 사용자가 재시도할 수 있습니다.
+- PostgreSQL `audit_action` enum에 추가된 추출 audit 값은 PostgreSQL 특성상 downgrade에서 안전하게 제거하지 않습니다. Migration downgrade는 데이터 파괴적인 enum 재생성을 수행하지 않습니다.
+
+## 로컬 검증 문서
+
+- Phase A 문서 추출 검증: `docs/LOCAL_VALIDATION_PHASE_A.md`
+- Phase A 자동 검증 스크립트 canonical entrypoint: `bash scripts/verify_phase_a.sh`
+- Host repository root 경로 예: `backend/tests/test_extraction_static.py`; `cd backend` 이후 및 Docker `backend-test` 내부 pytest 인자는 `tests/test_extraction_static.py`입니다.
+- TXT 업로드 extraction smoke test: `python scripts/extraction_smoke_test.py`

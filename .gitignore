@@ -10,3 +10,11 @@ dist/
 build/
 *.pyc
 .DS_Store
+*.tsbuildinfo
+login-response*.json
+upload-response*.json
+document-detail*.json
+extraction-test*.txt
+phase-a-smoke*.txt
+
+cookies.txt

@@ -1,7 +1,9 @@
 from pathlib import Path
 
+from tests.repository_paths import find_repository_root
 
-SERVICE_SOURCE = Path("app/documents/service.py").read_text()
+ROOT = find_repository_root(Path(__file__))
+SERVICE_SOURCE = (ROOT / "backend/app/documents/service.py").read_text(encoding="utf-8")
 
 
 def test_download_audit_records_started_completed_interrupted_and_failed_states() -> None:

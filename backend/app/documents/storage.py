@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import BinaryIO, Iterator
 
+from fastapi import HTTPException
 from minio.error import S3Error
 
 from app.config.settings import get_settings
@@ -86,3 +87,45 @@ class DocumentStorage:
             close()
         if callable(release_conn):
             release_conn()
+
+    def open_original_for_extraction(self, storage_key: str, *, max_size_bytes: int, spool_max_size: int = 1024 * 1024 * 8):
+        """Return a bounded seekable temp stream for a DB-owned storage key."""
+        import tempfile
+
+        try:
+            stat = self.stat_object(storage_key)
+        except HTTPException as exc:
+            from app.extraction.errors import ExtractionError, ExtractionErrorCode
+
+            status_code = getattr(exc, "status_code", None)
+            if status_code == 404:
+                raise ExtractionError(ExtractionErrorCode.OBJECT_NOT_FOUND) from exc
+            raise ExtractionError(ExtractionErrorCode.STORAGE_UNAVAILABLE) from exc
+        if stat.size > max_size_bytes:
+            from app.extraction.errors import ExtractionError, ExtractionErrorCode
+            raise ExtractionError(ExtractionErrorCode.OBJECT_TOO_LARGE)
+        response = None
+        temp = tempfile.SpooledTemporaryFile(max_size=spool_max_size, mode="w+b")
+        downloaded = 0
+        try:
+            response = self.client.get_object(self.bucket, storage_key)
+            for chunk in response.stream(amt=1024 * 1024):
+                downloaded += len(chunk)
+                if downloaded > stat.size or downloaded > max_size_bytes:
+                    from app.extraction.errors import ExtractionError, ExtractionErrorCode
+                    raise ExtractionError(ExtractionErrorCode.OBJECT_TOO_LARGE)
+                temp.write(chunk)
+            temp.seek(0)
+            return temp
+        except S3Error as exc:
+            temp.close()
+            from app.extraction.errors import ExtractionError, ExtractionErrorCode
+            if exc.code in {"NoSuchKey", "NoSuchObject", "NoSuchBucket"}:
+                raise ExtractionError(ExtractionErrorCode.OBJECT_NOT_FOUND) from exc
+            raise ExtractionError(ExtractionErrorCode.STORAGE_UNAVAILABLE) from exc
+        except Exception:
+            temp.close()
+            raise
+        finally:
+            if response is not None:
+                self.close_download_stream(response)

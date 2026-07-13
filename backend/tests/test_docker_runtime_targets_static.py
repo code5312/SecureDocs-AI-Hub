@@ -64,6 +64,15 @@ def test_verify_script_checks_backend_command_and_test_profile() -> None:
     assert "docker compose --profile test run --rm backend-test python -m pytest -v" in verify
 
 
+def test_phase_a_verify_uses_container_test_paths_and_smoke_skip_message() -> None:
+    verify_phase_a = read("scripts/verify_phase_a.sh")
+    assert "TARGETED_TESTS=(" in verify_phase_a
+    assert "tests/test_extraction_static.py" in verify_phase_a
+    assert "backend/tests/test_extraction_static.py" not in verify_phase_a
+    assert "docker compose --profile test run --rm backend-test python -m pytest -q" in verify_phase_a
+    assert "SKIP: extraction API smoke test requires SECUREDOCS_ADMIN_EMAIL and SECUREDOCS_ADMIN_PASSWORD" in verify_phase_a
+
+
 def test_root_dockerignore_keeps_backend_context_small_without_hiding_sources() -> None:
     dockerignore = read(".dockerignore")
     assert "frontend/node_modules" in dockerignore
